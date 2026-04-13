@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <title>{{title}}</title>
+</head>
+
+<body style="font-family: Arial; background:#f5f5f5; padding:20px;">
+  <table width="100%" cellpadding="0" cellspacing="0">
+    <tr>
+      <td align="center">
+        <table width="600" style="background:#ffffff; border-radius:10px; padding:24px;">
+          <tr>
+            <td>
+              <h2 style="color:#b91c1c; margin-top:0;">
+                {{#if emergency}}🚨 KHẨN CẤP: {{/if}}{{title}}
+              </h2>
+
+              <p>Xin chào <b>{{ten}}</b>,</p>
+
+              <p style="white-space: pre-line; line-height:1.7;">
+                {{noi_dung}}
+              </p>
+
+              {{#if nhom_mau}}
+              <p style="margin-top:16px; font-size:13px; color:#666;">
+                Nhóm máu của bạn: <b>{{nhom_mau}}</b>
+              </p>
+              {{/if}}
+
+              <hr style="margin:24px 0; border:none; border-top:1px solid #eee;" />
+
+              <p style="font-size:12px; color:#6b7280;">
+                Đây là email tự động từ hệ thống
+                <b>Smart Blood Donation System</b>, vui lòng không phản hồi.
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
