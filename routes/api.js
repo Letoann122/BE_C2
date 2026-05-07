@@ -137,6 +137,7 @@ doctorRouter.get("/news", NewsDoctorController.getMyNews);
 doctorRouter.post("/news", NewsDoctorController.create);
 doctorRouter.put("/news/:id", NewsDoctorController.update);
 doctorRouter.post("/checkin",CheckinController.checkin);
+doctorRouter.get("/checkin/today", CheckinController.todayCheckedIn);
 doctorRouter.get("/donors", DonorManagementController.list);
 doctorRouter.post("/donors/create", DonorManagementController.create);
 doctorRouter.get("/donors/:id", DonorDetailController.detail);
