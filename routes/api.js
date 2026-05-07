@@ -40,6 +40,7 @@ const DonorDetailController = require("../controllers/doctor/DonorDetailControll
 const CampaignsController = require("../controllers/doctor/CampaignsController");
 const sendNotificationController = require("../controllers/doctor/SendNotificationController");
 const CheckinController = require("../controllers/doctor/CheckinController");
+const DonationProcessController = require("../controllers/doctor/DonationProcessController");
 
 // ===== ADMIN =====
 const AdminController = require("../controllers/admin/AdminController");
@@ -153,6 +154,12 @@ doctorRouter.get("/support/notifications", SendNotificationController.listNotifi
 doctorRouter.post("/support/notifications", SendNotificationController.sendNotification);
 doctorRouter.post("/emergency-alert", EmergencyAlertController. createEmergencyAlert);
 doctorRouter.get("/donation-sites", DonationSitesController.getAll);
+doctorRouter.get("/donation-process/detail", DonationProcessController.detail);
+
+doctorRouter.post("/donation-process/start-screening",DonationProcessController.startScreening);
+doctorRouter.post("/donation-process/fail-screening",DonationProcessController.failScreening);
+doctorRouter.post("/donation-process/start-donation",DonationProcessController.startDonation);
+doctorRouter.post("/donation-process/complete",DonationProcessController.completeDonation);
 
 doctorRouter.get("/dashboard", DashboardDoctorController.index);
 
