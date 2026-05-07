@@ -2,39 +2,25 @@
 
 const { sequelize } = require("../../models");
 
-/**
- * GET /donor/donation-history?year=&month=&q=&page=&limit=
- * - Trả: stats + data + meta (pagination)
- * - Support campaign:
- *   + campaign locate_type = 'donation_site' => lấy ds_camp (hoặc fallback ds_appt)
- *   + campaign locate_type != 'donation_site' => lấy c.location
- * - Không phụ thuộc donations.hospital_id (có thể NULL)
- */
 module.exports = {
   async index(req, res) {
     try {
       const userId = req.user?.userId || req.user?.id;
       const role = req.user?.role;
 
-      if (!userId) return res.status(401).json({ status: false, message: "Unauthorized" });
-      if (role && role !== "donor") return res.status(403).json({ status: false, message: "Forbidden" });
+      if (!userId) {
+        return res.status(401).json({ status: false, message: "Unauthorized" });
+      }
 
-      const year = req.query.year ? parseInt(req.query.year, 10) : null;
-      const month = req.query.month ? parseInt(req.query.month, 10) : null;
-      const q = (req.query.q || "").trim() || null;
+      if (role && role !== "donor") {
+        return res.status(403).json({ status: false, message: "Forbidden" });
+      }
 
       const page = Math.max(parseInt(req.query.page || "1", 10), 1);
       const limitRaw = parseInt(req.query.limit || "10", 10);
       const limit = Math.min(Math.max(limitRaw, 1), 100);
       const offset = (page - 1) * limit;
 
-      const safeYear = Number.isFinite(year) && year >= 2000 && year <= 2100 ? year : null;
-      const safeMonth = Number.isFinite(month) && month >= 1 && month <= 12 ? month : null;
-      const like = q ? `%${q}%` : null;
-
-      // location_display:
-      // - campaign custom => c.location
-      // - else => ds_camp hoặc ds_appt
       const locationExpr = `
         CASE
           WHEN c.id IS NOT NULL AND (c.locate_type IS NULL OR c.locate_type <> 'donation_site')
@@ -46,12 +32,7 @@ module.exports = {
         END
       `;
 
-      // hospital_name: ưu tiên hospital theo donation_site (campaign/app) hơn là donations.hospital_id (vì có thể null)
-      const hospitalNameExpr = `
-        COALESCE(h_site.name, h_d.name, '')
-      `;
-
-      // ---- STATS ----
+      // ---- OVERVIEW + LAST DONATION ----
       const statsSql = `
         SELECT
           COUNT(*) AS total_count,
@@ -59,31 +40,60 @@ module.exports = {
           MAX(d.collected_at) AS last_donation_at
         FROM donations d
         JOIN appointments a ON a.id = d.appointment_id
-        LEFT JOIN campaigns c ON c.id = a.campaign_id
-
-        LEFT JOIN donation_sites ds_appt ON ds_appt.id = a.donation_site_id
-        LEFT JOIN donation_sites ds_camp ON ds_camp.id = c.donation_site_id
-
-        LEFT JOIN hospitals h_d ON h_d.id = d.hospital_id
-        LEFT JOIN hospitals h_site ON h_site.id = COALESCE(ds_camp.hospital_id, ds_appt.hospital_id)
-
         WHERE d.donor_user_id = :userId
-          AND (:year IS NULL OR YEAR(d.collected_at) = :year)
-          AND (:month IS NULL OR MONTH(d.collected_at) = :month)
-          AND (
-            :q IS NULL OR
-            COALESCE(c.title,'') LIKE :like OR
-            (${locationExpr}) LIKE :like OR
-            (${hospitalNameExpr}) LIKE :like
-          )
       `;
 
       const [statsRows] = await sequelize.query(statsSql, {
-        replacements: { userId, year: safeYear, month: safeMonth, q, like },
+        replacements: { userId },
       });
 
-      const statsRow = statsRows?.[0] || { total_count: 0, total_volume_ml: 0, last_donation_at: null };
-      const totalRecords = parseInt(statsRow.total_count || 0, 10);
+      const statsRow = statsRows?.[0] || {
+        total_count: 0,
+        total_volume_ml: 0,
+        last_donation_at: null,
+      };
+
+      const totalCount = parseInt(statsRow.total_count || 0, 10);
+      const totalVolume = parseInt(statsRow.total_volume_ml || 0, 10);
+      const lastDonationAt = statsRow.last_donation_at || null;
+
+      // ---- ELIGIBILITY ----
+      let nextEligibleDate = null;
+      let remainingDays = 0;
+      let progressPercent = 0;
+
+      if (lastDonationAt) {
+        const last = new Date(lastDonationAt);
+        const next = new Date(last);
+        next.setDate(next.getDate() + 90);
+        nextEligibleDate = next;
+
+        const now = new Date();
+
+        const msPerDay = 24 * 60 * 60 * 1000;
+        const diffMs = next.setHours(0, 0, 0, 0) - new Date(now).setHours(0, 0, 0, 0);
+        remainingDays = Math.max(Math.ceil(diffMs / msPerDay), 0);
+
+        const elapsedDays = 90 - remainingDays;
+        progressPercent = Math.min(Math.max(Math.round((elapsedDays / 90) * 100), 0), 100);
+      }
+
+      // ---- TOTAL RECORDS ----
+      const countSql = `
+        SELECT COUNT(*) AS total_records
+        FROM donations d
+        JOIN appointments a ON a.id = d.appointment_id
+        LEFT JOIN campaigns c ON c.id = a.campaign_id
+        LEFT JOIN donation_sites ds_appt ON ds_appt.id = a.donation_site_id
+        LEFT JOIN donation_sites ds_camp ON ds_camp.id = c.donation_site_id
+        WHERE d.donor_user_id = :userId
+      `;
+
+      const [countRows] = await sequelize.query(countSql, {
+        replacements: { userId },
+      });
+
+      const totalRecords = parseInt(countRows?.[0]?.total_records || 0, 10);
       const totalPages = Math.max(Math.ceil(totalRecords / limit), 1);
 
       // ---- LIST ----
@@ -94,56 +104,38 @@ module.exports = {
           d.volume_ml,
           d.notes,
           d.screened_ok,
-          CONCAT(bt.abo, bt.rh) AS blood_group,
-
           a.appointment_code,
           a.campaign_id,
           (CASE WHEN c.id IS NULL THEN 0 ELSE 1 END) AS is_campaign,
           c.title AS campaign_title,
-          c.locate_type AS campaign_locate_type,
-
           (${locationExpr}) AS location_display,
-          (${hospitalNameExpr}) AS hospital_name,
-
           COALESCE(ds_camp.name, ds_appt.name) AS donation_site_name,
           COALESCE(ds_camp.address, ds_appt.address) AS donation_site_address
-
         FROM donations d
         JOIN appointments a ON a.id = d.appointment_id
         LEFT JOIN campaigns c ON c.id = a.campaign_id
-
         LEFT JOIN donation_sites ds_appt ON ds_appt.id = a.donation_site_id
         LEFT JOIN donation_sites ds_camp ON ds_camp.id = c.donation_site_id
-
-        LEFT JOIN hospitals h_d ON h_d.id = d.hospital_id
-        LEFT JOIN hospitals h_site ON h_site.id = COALESCE(ds_camp.hospital_id, ds_appt.hospital_id)
-
-        JOIN blood_types bt ON bt.id = d.blood_type_id
-
         WHERE d.donor_user_id = :userId
-          AND (:year IS NULL OR YEAR(d.collected_at) = :year)
-          AND (:month IS NULL OR MONTH(d.collected_at) = :month)
-          AND (
-            :q IS NULL OR
-            COALESCE(c.title,'') LIKE :like OR
-            (${locationExpr}) LIKE :like OR
-            (${hospitalNameExpr}) LIKE :like
-          )
         ORDER BY d.collected_at DESC
         LIMIT ${limit} OFFSET ${offset}
       `;
 
       const [rows] = await sequelize.query(listSql, {
-        replacements: { userId, year: safeYear, month: safeMonth, q, like },
+        replacements: { userId },
       });
 
       return res.json({
         status: true,
         message: "OK",
-        stats: {
-          total_count: totalRecords,
-          total_volume_ml: parseInt(statsRow.total_volume_ml || 0, 10),
-          last_donation_at: statsRow.last_donation_at || null,
+        overview: {
+          total_count: totalCount,
+          total_volume_ml: totalVolume,
+        },
+        eligibility: {
+          next_eligible_date: nextEligibleDate || null,
+          remaining_days: remainingDays,
+          progress_percent: progressPercent,
         },
         meta: {
           page,
