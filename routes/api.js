@@ -39,6 +39,7 @@ const DonorManagementController = require("../controllers/doctor/DonorManagement
 const DonorDetailController = require("../controllers/doctor/DonorDetailController");
 const CampaignsController = require("../controllers/doctor/CampaignsController");
 const sendNotificationController = require("../controllers/doctor/SendNotificationController");
+const CheckinController = require("../controllers/doctor/CheckinController");
 
 // ===== ADMIN =====
 const AdminController = require("../controllers/admin/AdminController");
@@ -135,7 +136,8 @@ doctorRouter.get("/reports/campaign-performance", ReportController.campaignPerfo
 doctorRouter.get("/news", NewsDoctorController.getMyNews);
 doctorRouter.post("/news", NewsDoctorController.create);
 doctorRouter.put("/news/:id", NewsDoctorController.update);
-
+doctorRouter.post("/checkin",CheckinController.checkin);
+doctorRouter.get("/checkin/today", CheckinController.todayCheckedIn);
 doctorRouter.get("/donors", DonorManagementController.list);
 doctorRouter.post("/donors/create", DonorManagementController.create);
 doctorRouter.get("/donors/:id", DonorDetailController.detail);

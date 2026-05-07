@@ -2,9 +2,12 @@
 
 const { Op } = require("sequelize");
 const { Campaign, DonationSite, Appointment } = require("../../models");
+const {
+  APPOINTMENT_STATUS,
+  ACTIVE_APPOINTMENT_STATUSES,
+} = require("../../constants/appointmentStatus");
 
-// ===== helpers =====
-const todayStr = () => new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+const todayStr = () => new Date().toISOString().slice(0, 10);
 
 const computeCampaignStatus = (start_date, end_date) => {
   const t = todayStr();
@@ -24,7 +27,7 @@ const buildLocationDisplay = (raw) => {
 };
 
 const buildScheduledAtFromDateAndSlot = (dateStr, time_slot) => {
-  const left = String(time_slot || "7:00").split("-")[0].trim(); // "7:00"
+  const left = String(time_slot || "7:00").split("-")[0].trim();
   const [hh, mm] = left.split(":");
   const [Y, M, D] = String(dateStr).split("-").map(Number);
   return new Date(Y, (M || 1) - 1, D || 1, Number(hh || 7), Number(mm || 0), 0);
@@ -37,7 +40,6 @@ const normalizePreferredVolume = (v) => {
 };
 
 module.exports = {
-  // GET /api/public/campaigns?status=active|upcoming|running|ended
   async publicCampaigns(req, res) {
     try {
       const { status = "active" } = req.query;
@@ -92,7 +94,6 @@ module.exports = {
     }
   },
 
-  // GET /api/public/campaigns/:id
   async publicCampaignDetail(req, res) {
     try {
       const { id } = req.params;
@@ -109,10 +110,14 @@ module.exports = {
       });
 
       if (!campaign) {
-        return res.status(404).json({ status: false, message: "Không tìm thấy chiến dịch" });
+        return res.status(404).json({
+          status: false,
+          message: "Không tìm thấy chiến dịch",
+        });
       }
 
       const raw = campaign.toJSON();
+
       return res.json({
         status: true,
         data: {
@@ -127,8 +132,6 @@ module.exports = {
     }
   },
 
-  // ===================== DONOR: REGISTER CAMPAIGN =====================
-  // POST /api/donor/register-campaigns
   async donorCreateAppointment(req, res) {
     try {
       const donor_id = req.user?.userId || req.user?.id;
@@ -137,6 +140,7 @@ module.exports = {
       if (!campaign_id) {
         return res.json({ status: false, message: "Thiếu campaign_id!" });
       }
+
       if (!date || !time_slot) {
         return res.json({ status: false, message: "Thiếu ngày hoặc khung giờ!" });
       }
@@ -144,30 +148,33 @@ module.exports = {
       const campaign = await Campaign.findOne({
         where: { id: campaign_id, approval_status: "approved" },
       });
+
       if (!campaign) {
         return res.json({ status: false, message: "Chiến dịch không hợp lệ!" });
       }
 
       const camp = campaign.toJSON();
       const st = computeCampaignStatus(camp.start_date, camp.end_date);
+
       if (st === "ended") {
         return res.json({ status: false, message: "Chiến dịch đã kết thúc!" });
       }
 
-      // ngày phải nằm trong khoảng start_date - end_date
       const dStr = String(date);
       const sStr = String(camp.start_date).slice(0, 10);
       const eStr = String(camp.end_date).slice(0, 10);
+
       if (dStr < sStr || dStr > eStr) {
-        return res.json({ status: false, message: `Ngày phải trong ${sStr} - ${eStr}` });
+        return res.json({
+          status: false,
+          message: `Ngày phải trong ${sStr} - ${eStr}`,
+        });
       }
 
-      // build scheduled_at từ ngày + time_slot
       const scheduled_at = buildScheduledAtFromDateAndSlot(dStr, time_slot);
       const scheduledDate = new Date(scheduled_at);
       const now = new Date();
 
-      // 1) Không cho đặt lịch ở khung giờ đã trôi qua
       if (scheduledDate < now) {
         return res.json({
           status: false,
@@ -175,11 +182,10 @@ module.exports = {
         });
       }
 
-      // 2) Kiểm tra lần hiến gần nhất (COMPLETED) để đảm bảo cách 3 tháng
       const lastDonation = await Appointment.findOne({
         where: {
           donor_id,
-          status: "COMPLETED",
+          status: APPOINTMENT_STATUS.COMPLETED,
         },
         order: [["scheduled_at", "DESC"]],
       });
@@ -198,7 +204,6 @@ module.exports = {
         }
       }
 
-      // 3) Chặn trùng lịch trong cùng 1 ngày (bao gồm cả COMPLETED)
       const sameDay = new Date(
         scheduledDate.getFullYear(),
         scheduledDate.getMonth(),
@@ -212,7 +217,10 @@ module.exports = {
           donor_id,
           scheduled_at: { [Op.gte]: sameDay, [Op.lt]: nextDay },
           status: {
-            [Op.in]: ["REQUESTED", "APPROVED", "BOOKED", "COMPLETED"],
+            [Op.in]: [
+              ...ACTIVE_APPOINTMENT_STATUSES,
+              APPOINTMENT_STATUS.COMPLETED,
+            ],
           },
         },
       });
@@ -224,10 +232,11 @@ module.exports = {
         });
       }
 
-      // 4) donation_site_id theo locate_type
       let donation_site_id = null;
+
       if (camp.locate_type === "donation_site") {
         donation_site_id = camp.donation_site_id || null;
+
         if (!donation_site_id) {
           return res.json({
             status: false,
@@ -236,7 +245,6 @@ module.exports = {
         }
       }
 
-      // custom location -> nhét thêm vào notes để bác sĩ/admin đọc
       const extraLoc =
         camp.locate_type === "custom" && camp.location
           ? `[Địa điểm chiến dịch] ${camp.location}`
@@ -246,14 +254,14 @@ module.exports = {
 
       const created = await Appointment.create({
         donor_id,
-        donation_site_id, // custom => null
+        donation_site_id,
         campaign_id: camp.id,
         appointment_slot_id: null,
         scheduled_at,
         preferred_volume_ml: normalizePreferredVolume(preferred_volume_ml),
         notes: notesFinal || null,
         time_slot,
-        status: "REQUESTED",
+        status: APPOINTMENT_STATUS.REQUESTED,
       });
 
       return res.json({
@@ -267,7 +275,6 @@ module.exports = {
     }
   },
 
-  // ===================== ADMIN: APPROVE/REJECT CAMPAIGN REGISTRATIONS =====================
   async adminListCampaignRegistrations(req, res) {
     try {
       const { status } = req.query;
@@ -293,20 +300,35 @@ module.exports = {
       const admin_id = req.user?.userId || req.user?.id;
       const { id } = req.params;
 
-      const appt = await Appointment.findOne({ where: { id, campaign_id: { [Op.ne]: null } } });
-      if (!appt) return res.status(404).json({ status: false, message: "Không tìm thấy đăng ký!" });
-      if (appt.status !== "REQUESTED") {
-        return res.status(422).json({ status: false, message: "Chỉ duyệt khi REQUESTED!" });
+      const appt = await Appointment.findOne({
+        where: { id, campaign_id: { [Op.ne]: null } },
+      });
+
+      if (!appt) {
+        return res.status(404).json({
+          status: false,
+          message: "Không tìm thấy đăng ký!",
+        });
+      }
+
+      if (appt.status !== APPOINTMENT_STATUS.REQUESTED) {
+        return res.status(422).json({
+          status: false,
+          message: "Chỉ duyệt khi lịch đang ở trạng thái chờ duyệt!",
+        });
       }
 
       await appt.update({
-        status: "APPROVED",
-        approved_by_d: admin_id, // log nhanh
+        status: APPOINTMENT_STATUS.APPROVED,
+        approved_by_admin_id: admin_id,
         approved_at: new Date(),
         rejected_reason: null,
       });
 
-      return res.json({ status: true, message: "Duyệt đăng ký chiến dịch thành công!" });
+      return res.json({
+        status: true,
+        message: "Duyệt đăng ký chiến dịch thành công!",
+      });
     } catch (err) {
       console.error("adminApproveCampaignRegistration error:", err);
       return res.status(500).json({ status: false, message: err.message });
@@ -320,23 +342,41 @@ module.exports = {
       const { rejected_reason } = req.body;
 
       if (!rejected_reason || !String(rejected_reason).trim()) {
-        return res.status(422).json({ status: false, message: "Vui lòng nhập lý do từ chối!" });
+        return res.status(422).json({
+          status: false,
+          message: "Vui lòng nhập lý do từ chối!",
+        });
       }
 
-      const appt = await Appointment.findOne({ where: { id, campaign_id: { [Op.ne]: null } } });
-      if (!appt) return res.status(404).json({ status: false, message: "Không tìm thấy đăng ký!" });
-      if (appt.status !== "REQUESTED") {
-        return res.status(422).json({ status: false, message: "Chỉ từ chối khi REQUESTED!" });
+      const appt = await Appointment.findOne({
+        where: { id, campaign_id: { [Op.ne]: null } },
+      });
+
+      if (!appt) {
+        return res.status(404).json({
+          status: false,
+          message: "Không tìm thấy đăng ký!",
+        });
+      }
+
+      if (appt.status !== APPOINTMENT_STATUS.REQUESTED) {
+        return res.status(422).json({
+          status: false,
+          message: "Chỉ từ chối khi lịch đang ở trạng thái chờ duyệt!",
+        });
       }
 
       await appt.update({
-        status: "REJECTED",
+        status: APPOINTMENT_STATUS.REJECTED,
         rejected_reason: String(rejected_reason).trim(),
-        approved_by_d: admin_id,
+        approved_by_admin_id: admin_id,
         approved_at: new Date(),
       });
 
-      return res.json({ status: true, message: "Đã từ chối đăng ký chiến dịch!" });
+      return res.json({
+        status: true,
+        message: "Đã từ chối đăng ký chiến dịch!",
+      });
     } catch (err) {
       console.error("adminRejectCampaignRegistration error:", err);
       return res.status(500).json({ status: false, message: err.message });

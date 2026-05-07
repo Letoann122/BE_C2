@@ -1,8 +1,57 @@
 "use strict";
 
-const { Appointment, DonationSite, Campaign } = require("../../models");
+const {
+  Appointment,
+  AppointmentSlot,
+  DonationSite,
+  Campaign,
+  User,
+} = require("../../models");
+
 const { Op } = require("sequelize");
 const emailQueue = require("../../services/emailQueue");
+
+const {
+  APPOINTMENT_STATUS,
+  ACTIVE_APPOINTMENT_STATUSES,
+} = require("../../constants/appointmentStatus");
+
+const formatTime = (value) => {
+  if (!value) return "";
+
+  if (typeof value === "string") {
+    return value.slice(0, 5);
+  }
+
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+
+  return d.toTimeString().slice(0, 5);
+};
+
+const inferTimeSlotFromScheduledAt = (scheduledAt) => {
+  if (!scheduledAt) return "Chưa có khung giờ";
+
+  const d = new Date(scheduledAt);
+  if (Number.isNaN(d.getTime())) return "Chưa có khung giờ";
+
+  const hour = d.getHours();
+
+  if (hour < 12) return "07:00 - 11:00";
+  return "13:00 - 17:00";
+};
+
+const buildTimeSlot = (appointment) => {
+  if (appointment.time_slot) return appointment.time_slot;
+
+  const slot = appointment.slot;
+
+  if (slot?.start_time && slot?.end_time) {
+    return `${formatTime(slot.start_time)} - ${formatTime(slot.end_time)}`;
+  }
+
+  return inferTimeSlotFromScheduledAt(appointment.scheduled_at);
+};
 
 module.exports = {
   async create(req, res) {
@@ -15,7 +64,7 @@ module.exports = {
         preferred_volume_ml,
         notes,
         time_slot,
-        campaign_id, // hỗ trợ campaign nếu có
+        campaign_id,
       } = req.validated;
 
       const scheduledDate = new Date(scheduled_at);
@@ -28,9 +77,11 @@ module.exports = {
         });
       }
 
-      // Kiểm tra lần hiến trước
       const lastDonation = await Appointment.findOne({
-        where: { donor_id, status: "COMPLETED" },
+        where: {
+          donor_id,
+          status: APPOINTMENT_STATUS.COMPLETED,
+        },
         order: [["scheduled_at", "DESC"]],
       });
 
@@ -48,16 +99,27 @@ module.exports = {
         }
       }
 
-      // Không được đặt 2 lịch trong cùng 1 ngày
-      const sameDay = new Date(scheduledDate.getFullYear(), scheduledDate.getMonth(), scheduledDate.getDate());
+      const sameDay = new Date(
+        scheduledDate.getFullYear(),
+        scheduledDate.getMonth(),
+        scheduledDate.getDate()
+      );
       const nextDay = new Date(sameDay);
       nextDay.setDate(nextDay.getDate() + 1);
 
       const existed = await Appointment.findOne({
         where: {
           donor_id,
-          scheduled_at: { [Op.gte]: sameDay, [Op.lt]: nextDay },
-          status: { [Op.in]: ["REQUESTED", "APPROVED", "BOOKED", "COMPLETED"] },
+          scheduled_at: {
+            [Op.gte]: sameDay,
+            [Op.lt]: nextDay,
+          },
+          status: {
+            [Op.in]: [
+              ...ACTIVE_APPOINTMENT_STATUSES,
+              APPOINTMENT_STATUS.COMPLETED,
+            ],
+          },
         },
       });
 
@@ -68,13 +130,8 @@ module.exports = {
         });
       }
 
-      // =======================================
-      // 🔥 Generate Code: HM (hiến máu), CD (chiến dịch)
-      // =======================================
-
       const prefix = campaign_id ? "CD" : "HM";
 
-      // Lấy AUTO_INCREMENT kế tiếp
       const [next] = await Appointment.sequelize.query(`
         SELECT AUTO_INCREMENT AS nextId
         FROM information_schema.TABLES
@@ -83,10 +140,7 @@ module.exports = {
       `);
 
       const nextId = next[0]?.nextId || 1;
-
       const appointment_code = prefix + String(nextId).padStart(6, "0");
-
-      // =======================================
 
       const newAppt = await Appointment.create({
         appointment_code,
@@ -98,10 +152,9 @@ module.exports = {
         notes,
         time_slot,
         campaign_id: campaign_id || null,
-        status: "REQUESTED",
+        status: APPOINTMENT_STATUS.REQUESTED,
       });
 
-      // Gửi email nhắc lịch
       const sendAt = new Date(scheduledDate);
       sendAt.setDate(sendAt.getDate() - 1);
 
@@ -125,6 +178,7 @@ module.exports = {
       });
     } catch (error) {
       console.error("CREATE APPOINTMENT ERROR:", error);
+
       return res.status(500).json({
         status: false,
         message: "Lỗi máy chủ khi tạo lịch hẹn!",
@@ -138,15 +192,38 @@ module.exports = {
 
       const rows = await Appointment.findAll({
         where: { donor_id },
+
         include: [
-          { model: DonationSite, as: "donation_site" },
-          { model: Campaign, as: "campaign" },
+          {
+            model: User,
+            as: "donor",
+            attributes: ["id", "full_name", "email", "phone", "blood_group"],
+          },
+          {
+            model: DonationSite,
+            as: "donation_site",
+            required: false,
+          },
+          {
+            model: AppointmentSlot,
+            as: "slot",
+            required: false,
+          },
+          {
+            model: Campaign,
+            as: "campaign",
+            required: false,
+          },
         ],
+
         order: [["scheduled_at", "DESC"]],
       });
 
       const data = rows.map((appt) => {
         const plain = appt.toJSON();
+
+        plain.time_slot = buildTimeSlot(plain);
+
         if (!plain.donation_site && plain.campaign && plain.campaign.location) {
           plain.donation_site = {
             id: null,
@@ -154,14 +231,21 @@ module.exports = {
             address: plain.campaign.location,
           };
         }
+
         return plain;
       });
 
-      return res.json({ status: true, data });
+      return res.json({
+        status: true,
+        data,
+      });
     } catch (e) {
+      console.error("MY APPOINTMENTS ERROR:", e);
+
       return res.status(500).json({
         status: false,
         message: "Không tải được danh sách lịch!",
+        error: e.message,
       });
     }
   },
@@ -171,7 +255,12 @@ module.exports = {
       const donor_id = req.user?.userId || req.user?.id;
       const { id } = req.params;
 
-      const appt = await Appointment.findOne({ where: { id, donor_id } });
+      const appt = await Appointment.findOne({
+        where: {
+          id,
+          donor_id,
+        },
+      });
 
       if (!appt) {
         return res.status(404).json({
@@ -180,20 +269,30 @@ module.exports = {
         });
       }
 
-      if (!["REQUESTED", "APPROVED", "BOOKED"].includes(appt.status)) {
+      if (
+        ![
+          APPOINTMENT_STATUS.REQUESTED,
+          APPOINTMENT_STATUS.APPROVED,
+          APPOINTMENT_STATUS.BOOKED,
+        ].includes(appt.status)
+      ) {
         return res.json({
           status: false,
           message: "Lịch không thể huỷ ở trạng thái hiện tại!",
         });
       }
 
-      await appt.update({ status: "CANCELLED" });
+      await appt.update({
+        status: APPOINTMENT_STATUS.CANCELLED,
+      });
 
       return res.json({
         status: true,
         message: "Đã huỷ lịch hiến máu!",
       });
     } catch (e) {
+      console.error("CANCEL APPOINTMENT ERROR:", e);
+
       return res.status(500).json({
         status: false,
         message: "Lỗi khi huỷ lịch!",
