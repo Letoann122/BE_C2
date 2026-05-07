@@ -26,7 +26,7 @@ const AppointmentController = require("../controllers/donor/AppointmentControlle
 const ProfileController = require("../controllers/ProfileController");
 const ChangePasswordController = require("../controllers/ChangePassController");
 const DonorController = require("../controllers/donor/DonorController");
-
+const NearbyDonationController = require("../controllers/donor/NearbyDonationController");
 // ===== DOCTOR =====
 const DoctorController = require("../controllers/doctor/DoctorController");
 const DoctorProfileController = require("../controllers/doctor/DoctorProfileController");
@@ -96,6 +96,7 @@ donorRouter.get("/donation-appointments", AppointmentController.myList);
 donorRouter.post("/donation-appointments/:id/cancel", AppointmentController.cancel);
 donorRouter.post("/register-campaigns", CampaignController.donorCreateAppointment);
 donorRouter.get("/donation-history", DonationHistoryController.index);
+donorRouter.get("/nearby-donations", NearbyDonationController.index);
 router.use("/donor", verifyToken("donor"), donorRouter);
 
 // ==================== DOCTOR ROUTES ====================
