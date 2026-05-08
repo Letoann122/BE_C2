@@ -36,7 +36,55 @@ function parseQrPayload(raw) {
         appointment_code: text,
     };
 }
+const ACTIVE_BEFORE_CHECKIN_STATUSES = ["APPROVED", "BOOKED"];
 
+function getNoShowCutoff(scheduledAt) {
+    const date = new Date(scheduledAt);
+    const hour = date.getHours();
+
+    const cutoff = new Date(date);
+
+    if (hour < 12) {
+        cutoff.setHours(11, 30, 0, 0);
+    } else {
+        cutoff.setHours(17, 30, 0, 0);
+    }
+
+    return cutoff;
+}
+
+async function markNoShowAppointments() {
+    const now = new Date();
+
+    const appointments = await Appointment.findAll({
+        where: {
+            status: {
+                [Op.in]: ACTIVE_BEFORE_CHECKIN_STATUSES,
+            },
+            checked_in_at: null,
+            scheduled_at: {
+                [Op.lte]: now,
+            },
+        },
+    });
+
+    let updatedCount = 0;
+
+    for (const appointment of appointments) {
+        const cutoff = getNoShowCutoff(appointment.scheduled_at);
+
+        if (now >= cutoff) {
+            appointment.status = "NO_SHOW";
+            appointment.no_show_at = now;
+
+            await appointment.save();
+
+            updatedCount++;
+        }
+    }
+
+    return updatedCount;
+}
 module.exports = {
     async checkin(req, res) {
         try {
@@ -267,5 +315,28 @@ module.exports = {
                 error: error.message,
             });
         }
-    }
+    },
+    async markNoShow(req, res) {
+        try {
+            const updatedCount = await markNoShowAppointments();
+
+            return res.json({
+                status: true,
+                message: "Cập nhật vắng mặt thành công!",
+                data: {
+                    updated_count: updatedCount,
+                },
+            });
+        } catch (error) {
+            console.error("MARK NO SHOW ERROR:", error);
+
+            return res.status(500).json({
+                status: false,
+                message: "Lỗi server khi cập nhật vắng mặt!",
+                error: error.message,
+            });
+        }
+    },
+
+    markNoShowAppointments,
 };

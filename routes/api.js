@@ -99,13 +99,14 @@ donorRouter.post("/donation-appointments/:id/cancel", AppointmentController.canc
 donorRouter.post("/register-campaigns", CampaignController.donorCreateAppointment);
 donorRouter.get("/donation-history", DonationHistoryController.index);
 donorRouter.get("/nearby-donations", NearbyDonationController.index);
+
 router.use("/donor", verifyToken("donor"), donorRouter);
 
 // ==================== DOCTOR ROUTES ====================
 const doctorRouter = express.Router();
 
 doctorRouter.get("/check-token", DoctorController.checkToken);
-
+doctorRouter.post("/appointments/mark-no-show", CheckinController.markNoShow);
 doctorRouter.get("/profile", DoctorProfileController.getProfile);
 doctorRouter.put("/profile", DoctorProfileController.updateProfile);
 doctorRouter.put("/change-password", ChangePassDoctorController.changePassword);
