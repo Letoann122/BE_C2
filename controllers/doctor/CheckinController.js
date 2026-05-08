@@ -81,8 +81,8 @@ async function markNoShowAppointments() {
             await appointment.save();
             emitAppointmentUpdated(appointment.id, {
                 status: appointment.status,
-                event: "CHECKED_IN",
-                message: "Bạn đã check-in thành công.",
+                event: "NO_SHOW",
+                message: "Lịch hẹn đã được ghi nhận là vắng mặt.",
             });
             updatedCount++;
         }
@@ -189,7 +189,11 @@ module.exports = {
             appointment.checked_in_by_doctor_id = doctor.id;
 
             await appointment.save();
-
+            emitAppointmentUpdated(appointment.id, {
+                status: appointment.status,
+                event: "CHECKED_IN",
+                message: "Bạn đã check-in thành công.",
+            });
             return res.json({
                 status: true,
                 message: "Check-in thành công!",

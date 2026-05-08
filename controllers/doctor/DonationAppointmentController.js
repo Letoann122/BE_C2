@@ -10,7 +10,7 @@ const {
   Hospital,
   Campaign,
 } = require("../../models");
-
+const { emitAppointmentUpdated } = require("../../socket");
 const emailQueue = require("../../services/emailQueue");
 const { APPOINTMENT_STATUS } = require("../../constants/appointmentStatus");
 
@@ -118,18 +118,18 @@ const loadCampaignMap = async (campaignIds) => {
 
   const includeDonationSite = campaignSiteAssoc
     ? {
-        association: campaignSiteAssoc,
-        required: false,
-        include: hospitalAssoc
-          ? [{ association: hospitalAssoc, required: false }]
-          : [Hospital],
-      }
+      association: campaignSiteAssoc,
+      required: false,
+      include: hospitalAssoc
+        ? [{ association: hospitalAssoc, required: false }]
+        : [Hospital],
+    }
     : {
-        model: DonationSite,
-        as: "donation_site",
-        required: false,
-        include: [Hospital],
-      };
+      model: DonationSite,
+      as: "donation_site",
+      required: false,
+      include: [Hospital],
+    };
 
   const camps = await Campaign.findAll({
     where: { id: { [Op.in]: ids } },
@@ -176,75 +176,75 @@ module.exports = {
         include: [
           donorAssoc
             ? {
-                association: donorAssoc,
-                attributes: ["full_name", "phone", "email", "blood_group"],
-              }
+              association: donorAssoc,
+              attributes: ["full_name", "phone", "email", "blood_group"],
+            }
             : {
-                model: User,
-                attributes: ["full_name", "phone", "email", "blood_group"],
-              },
+              model: User,
+              attributes: ["full_name", "phone", "email", "blood_group"],
+            },
 
           slotAssoc
             ? {
-                association: slotAssoc,
-                required: false,
-                include: [
-                  slotSiteAssoc
-                    ? {
-                        association: slotSiteAssoc,
-                        required: false,
-                        include: hospitalAssoc
-                          ? [{ association: hospitalAssoc, required: false }]
-                          : [Hospital],
-                      }
-                    : {
-                        model: DonationSite,
-                        required: false,
-                        include: hospitalAssoc
-                          ? [{ association: hospitalAssoc, required: false }]
-                          : [Hospital],
-                      },
-                ],
-              }
-            : {
-                model: AppointmentSlot,
-                required: false,
-                include: [
-                  {
+              association: slotAssoc,
+              required: false,
+              include: [
+                slotSiteAssoc
+                  ? {
+                    association: slotSiteAssoc,
+                    required: false,
+                    include: hospitalAssoc
+                      ? [{ association: hospitalAssoc, required: false }]
+                      : [Hospital],
+                  }
+                  : {
                     model: DonationSite,
                     required: false,
-                    include: [Hospital],
+                    include: hospitalAssoc
+                      ? [{ association: hospitalAssoc, required: false }]
+                      : [Hospital],
                   },
-                ],
-              },
+              ],
+            }
+            : {
+              model: AppointmentSlot,
+              required: false,
+              include: [
+                {
+                  model: DonationSite,
+                  required: false,
+                  include: [Hospital],
+                },
+              ],
+            },
 
           siteAssoc
             ? {
-                association: siteAssoc,
-                required: false,
-                include: hospitalAssoc
-                  ? [{ association: hospitalAssoc, required: false }]
-                  : [Hospital],
-              }
+              association: siteAssoc,
+              required: false,
+              include: hospitalAssoc
+                ? [{ association: hospitalAssoc, required: false }]
+                : [Hospital],
+            }
             : {
-                model: DonationSite,
-                as: "donation_site",
-                required: false,
-                include: [Hospital],
-              },
+              model: DonationSite,
+              as: "donation_site",
+              required: false,
+              include: [Hospital],
+            },
 
           approvedDoctorAssoc
             ? {
-                association: approvedDoctorAssoc,
-                attributes: ["full_name"],
-                required: false,
-              }
+              association: approvedDoctorAssoc,
+              attributes: ["full_name"],
+              required: false,
+            }
             : {
-                model: Doctor,
-                as: "approved_doctor",
-                attributes: ["full_name"],
-                required: false,
-              },
+              model: Doctor,
+              as: "approved_doctor",
+              attributes: ["full_name"],
+              required: false,
+            },
         ],
         order: [["created_at", "DESC"]],
       });
@@ -362,50 +362,50 @@ module.exports = {
 
           slotAssoc
             ? {
-                association: slotAssoc,
-                required: false,
-                include: [
-                  slotSiteAssoc
-                    ? {
-                        association: slotSiteAssoc,
-                        required: false,
-                        include: hospitalAssoc
-                          ? [{ association: hospitalAssoc, required: false }]
-                          : [Hospital],
-                      }
-                    : {
-                        model: DonationSite,
-                        required: false,
-                        include: [Hospital],
-                      },
-                ],
-              }
-            : {
-                model: AppointmentSlot,
-                required: false,
-                include: [
-                  {
+              association: slotAssoc,
+              required: false,
+              include: [
+                slotSiteAssoc
+                  ? {
+                    association: slotSiteAssoc,
+                    required: false,
+                    include: hospitalAssoc
+                      ? [{ association: hospitalAssoc, required: false }]
+                      : [Hospital],
+                  }
+                  : {
                     model: DonationSite,
                     required: false,
                     include: [Hospital],
                   },
-                ],
-              },
+              ],
+            }
+            : {
+              model: AppointmentSlot,
+              required: false,
+              include: [
+                {
+                  model: DonationSite,
+                  required: false,
+                  include: [Hospital],
+                },
+              ],
+            },
 
           siteAssoc
             ? {
-                association: siteAssoc,
-                required: false,
-                include: hospitalAssoc
-                  ? [{ association: hospitalAssoc, required: false }]
-                  : [Hospital],
-              }
+              association: siteAssoc,
+              required: false,
+              include: hospitalAssoc
+                ? [{ association: hospitalAssoc, required: false }]
+                : [Hospital],
+            }
             : {
-                model: DonationSite,
-                as: "donation_site",
-                required: false,
-                include: [Hospital],
-              },
+              model: DonationSite,
+              as: "donation_site",
+              required: false,
+              include: [Hospital],
+            },
         ],
       });
 
@@ -438,7 +438,11 @@ module.exports = {
       appointment.approved_at = new Date();
       appointment.rejected_reason = null;
       await appointment.save();
-
+      emitAppointmentUpdated(appointment.id, {
+        status: appointment.status,
+        event: "APPOINTMENT_APPROVED",
+        message: "Lịch hiến máu của bạn đã được duyệt.",
+      });
       const isCampaign = !!appointment.campaign_id;
 
       let extra = {};
@@ -527,50 +531,50 @@ module.exports = {
 
           slotAssoc
             ? {
-                association: slotAssoc,
-                required: false,
-                include: [
-                  slotSiteAssoc
-                    ? {
-                        association: slotSiteAssoc,
-                        required: false,
-                        include: hospitalAssoc
-                          ? [{ association: hospitalAssoc, required: false }]
-                          : [Hospital],
-                      }
-                    : {
-                        model: DonationSite,
-                        required: false,
-                        include: [Hospital],
-                      },
-                ],
-              }
-            : {
-                model: AppointmentSlot,
-                required: false,
-                include: [
-                  {
+              association: slotAssoc,
+              required: false,
+              include: [
+                slotSiteAssoc
+                  ? {
+                    association: slotSiteAssoc,
+                    required: false,
+                    include: hospitalAssoc
+                      ? [{ association: hospitalAssoc, required: false }]
+                      : [Hospital],
+                  }
+                  : {
                     model: DonationSite,
                     required: false,
                     include: [Hospital],
                   },
-                ],
-              },
+              ],
+            }
+            : {
+              model: AppointmentSlot,
+              required: false,
+              include: [
+                {
+                  model: DonationSite,
+                  required: false,
+                  include: [Hospital],
+                },
+              ],
+            },
 
           siteAssoc
             ? {
-                association: siteAssoc,
-                required: false,
-                include: hospitalAssoc
-                  ? [{ association: hospitalAssoc, required: false }]
-                  : [Hospital],
-              }
+              association: siteAssoc,
+              required: false,
+              include: hospitalAssoc
+                ? [{ association: hospitalAssoc, required: false }]
+                : [Hospital],
+            }
             : {
-                model: DonationSite,
-                as: "donation_site",
-                required: false,
-                include: [Hospital],
-              },
+              model: DonationSite,
+              as: "donation_site",
+              required: false,
+              include: [Hospital],
+            },
         ],
       });
 
@@ -603,7 +607,11 @@ module.exports = {
       appointment.approved_at = new Date();
       appointment.rejected_reason = rejected_reason.trim();
       await appointment.save();
-
+      emitAppointmentUpdated(appointment.id, {
+        status: appointment.status,
+        event: "APPOINTMENT_REJECTED",
+        message: "Lịch hiến máu của bạn đã bị từ chối.",
+      });
       const isCampaign = !!appointment.campaign_id;
 
       let extra = {};
