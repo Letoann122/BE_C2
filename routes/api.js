@@ -81,7 +81,7 @@ router.get("/news/:id", NewsController.getById);
 router.get("/public/campaigns", CampaignController.publicCampaigns);
 router.get("/public/campaigns/:id", CampaignController.publicCampaignDetail);
 router.get("/public/emergency-alert", EmergencyAlertController.getEmergencyAlert);
-
+router.get("/support/emergency-active", SendNotificationController.activeEmergency);
 // ==================== DONOR ROUTES ====================
 const donorRouter = express.Router();
 
@@ -167,6 +167,9 @@ doctorRouter.get("/dashboard", DashboardDoctorController.index);
 doctorRouter.get("/blood-testing/list", BloodInventoryController.testingList);
 doctorRouter.post("/blood-testing/approve", BloodInventoryController.approveTesting);
 doctorRouter.post("/blood-testing/reject", BloodInventoryController.rejectTesting);
+doctorRouter.get("/support/notifications", SendNotificationController.listNotifications);
+doctorRouter.post("/support/notifications", SendNotificationController.sendNotification);
+doctorRouter.patch("/support/notifications/:id/close", SendNotificationController.closeNotification);
 
 router.use("/doctor", verifyToken("doctor"), doctorRouter);
 
