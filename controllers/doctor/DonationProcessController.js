@@ -10,6 +10,7 @@ const {
     BloodType,
     BloodInventory,
     InventoryTransaction,
+    Campaign,
     sequelize,
 } = require("../../models");
 
@@ -54,10 +55,41 @@ async function getDoctor(req, transaction = null) {
 
 function appendNote(oldNote, newNote) {
     if (!newNote) return oldNote || null;
-
     if (!oldNote) return newNote;
-
     return `${oldNote}\n${newNote}`;
+}
+
+function resolveAppointmentLocation(appointment) {
+    let siteName = "";
+    let address = "";
+
+    const campaign = appointment.campaign || null;
+    const directSite = appointment.donation_site || null;
+
+    if (campaign) {
+        if (campaign.locate_type === "donation_site") {
+            siteName =
+                campaign.donation_site?.name ||
+                directSite?.name ||
+                "";
+
+            address =
+                campaign.donation_site?.address ||
+                directSite?.address ||
+                "";
+        } else {
+            siteName = campaign.location || "";
+            address = "";
+        }
+    } else {
+        siteName = directSite?.name || "";
+        address = directSite?.address || "";
+    }
+
+    return {
+        site_name: siteName,
+        address,
+    };
 }
 
 module.exports = {
@@ -95,7 +127,28 @@ module.exports = {
                     {
                         model: DonationSite,
                         as: "donation_site",
+                        required: false,
                         attributes: ["id", "name", "address"],
+                    },
+                    {
+                        model: Campaign,
+                        as: "campaign",
+                        required: false,
+                        attributes: [
+                            "id",
+                            "title",
+                            "locate_type",
+                            "location",
+                            "donation_site_id",
+                        ],
+                        include: [
+                            {
+                                model: DonationSite,
+                                as: "donation_site",
+                                required: false,
+                                attributes: ["id", "name", "address"],
+                            },
+                        ],
                     },
                 ],
             });
@@ -126,6 +179,8 @@ module.exports = {
                 donation.confirmed_by_doctor = confirmedDoctor || null;
             }
 
+            const location = resolveAppointmentLocation(appointment);
+
             return res.json({
                 status: true,
                 message: "Lấy chi tiết quy trình hiến máu thành công!",
@@ -140,6 +195,11 @@ module.exports = {
                     screening_started_at: appointment.screening_started_at,
                     donation_started_at: appointment.donation_started_at,
                     completed_at: appointment.completed_at,
+
+                    site_name: location.site_name,
+                    address: location.address,
+                    campaign: appointment.campaign,
+
                     donor: appointment.donor,
                     donation_site: appointment.donation_site,
                     donation,
@@ -286,9 +346,8 @@ module.exports = {
                 });
             }
 
-            const note = `[Sàng lọc không đạt] ${
-                reason || screening_note || "Không có ghi chú"
-            }`;
+            const note = `[Sàng lọc không đạt] ${reason || screening_note || "Không có ghi chú"
+                }`;
 
             appointment.status = "FAILED_SCREENING";
             appointment.notes = appendNote(appointment.notes, note);
@@ -569,8 +628,8 @@ module.exports = {
                     units: 1,
                     donation_date: donationDate,
                     expiry_date: expiryDate,
-                    status: "full",
-                    quality_note: null,
+                    status: "testing",
+                    quality_note: "Túi máu đang chờ kiểm định sau hiến máu",
                 },
                 {
                     transaction: t,
@@ -583,7 +642,7 @@ module.exports = {
                     user_id: req.user?.userId || req.user?.id || null,
                     tx_type: "IN",
                     units: 1,
-                    reason: `Nhập kho từ quy trình hiến máu appointment_id=${appointment.id}`,
+                    reason: `Tạo túi máu chờ kiểm định từ appointment_id=${appointment.id}`,
                     ref_donation_id: donation.id,
                     occurred_at: now,
                 },
@@ -608,18 +667,21 @@ module.exports = {
             emitAppointmentUpdated(appointment.id, {
                 status: appointment.status,
                 event: "COMPLETE_DONATION",
-                message: "Quá trình hiến máu đã hoàn tất.",
+                message:
+                    "Quá trình hiến máu đã hoàn tất. Túi máu đang chờ kiểm định.",
             });
 
             return res.status(201).json({
                 status: true,
-                message: "Hoàn tất hiến máu và nhập kho thành công!",
+                message:
+                    "Hoàn tất hiến máu. Túi máu đã được chuyển sang trạng thái chờ kiểm định!",
                 data: {
                     appointment_id: appointment.id,
                     appointment_code: appointment.appointment_code,
                     status: appointment.status,
                     donation_id: donation.id,
                     inventory_id: inventory.id,
+                    inventory_status: inventory.status,
                     volume_ml: Number(volume_ml),
                     blood_group: parsedBloodGroup.label,
                     completed_at: appointment.completed_at,

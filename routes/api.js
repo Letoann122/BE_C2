@@ -164,6 +164,9 @@ doctorRouter.post("/donation-process/start-donation",DonationProcessController.s
 doctorRouter.post("/donation-process/complete",DonationProcessController.completeDonation);
 
 doctorRouter.get("/dashboard", DashboardDoctorController.index);
+doctorRouter.get("/blood-testing/list", BloodInventoryController.testingList);
+doctorRouter.post("/blood-testing/approve", BloodInventoryController.approveTesting);
+doctorRouter.post("/blood-testing/reject", BloodInventoryController.rejectTesting);
 
 router.use("/doctor", verifyToken("doctor"), doctorRouter);
 
