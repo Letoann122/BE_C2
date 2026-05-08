@@ -2,6 +2,7 @@
 
 const { Op } = require("sequelize");
 const { Appointment, Doctor, User, DonationSite } = require("../../models");
+const { emitAppointmentUpdated } = require("../../socket");
 const {
     APPOINTMENT_STATUS,
     QR_ALLOWED_STATUSES,
@@ -78,7 +79,11 @@ async function markNoShowAppointments() {
             appointment.no_show_at = now;
 
             await appointment.save();
-
+            emitAppointmentUpdated(appointment.id, {
+                status: appointment.status,
+                event: "CHECKED_IN",
+                message: "Bạn đã check-in thành công.",
+            });
             updatedCount++;
         }
     }
