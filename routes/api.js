@@ -99,6 +99,7 @@ donorRouter.post("/donation-appointments/:id/cancel", AppointmentController.canc
 donorRouter.post("/register-campaigns", CampaignController.donorCreateAppointment);
 donorRouter.get("/donation-history", DonationHistoryController.index);
 donorRouter.get("/nearby-donations", NearbyDonationController.index);
+donorRouter.get("/appointment-process/detail",DonationProcessController.detail);
 
 router.use("/donor", verifyToken("donor"), donorRouter);
 

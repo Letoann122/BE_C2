@@ -1,5 +1,6 @@
 "use strict";
 
+const { emitAppointmentUpdated } = require("../../socket");
 const {
     Appointment,
     Donation,
@@ -209,6 +210,12 @@ module.exports = {
             await appointment.save({ transaction: t });
             await t.commit();
 
+            emitAppointmentUpdated(appointment.id, {
+                status: appointment.status,
+                event: "START_SCREENING",
+                message: "Bác sĩ đã bắt đầu khám sàng lọc.",
+            });
+
             return res.json({
                 status: true,
                 message: "Đã bắt đầu sàng lọc!",
@@ -279,13 +286,21 @@ module.exports = {
                 });
             }
 
-            const note = `[Sàng lọc không đạt] ${reason || screening_note || "Không có ghi chú"}`;
+            const note = `[Sàng lọc không đạt] ${
+                reason || screening_note || "Không có ghi chú"
+            }`;
 
             appointment.status = "FAILED_SCREENING";
             appointment.notes = appendNote(appointment.notes, note);
 
             await appointment.save({ transaction: t });
             await t.commit();
+
+            emitAppointmentUpdated(appointment.id, {
+                status: appointment.status,
+                event: "FAILED_SCREENING",
+                message: "Bạn không đạt điều kiện hiến máu.",
+            });
 
             return res.json({
                 status: true,
@@ -382,6 +397,12 @@ module.exports = {
             await appointment.save({ transaction: t });
             await t.commit();
 
+            emitAppointmentUpdated(appointment.id, {
+                status: appointment.status,
+                event: "START_DONATION",
+                message: "Bạn đã đủ điều kiện và bắt đầu hiến máu.",
+            });
+
             return res.json({
                 status: true,
                 message: "Đã bắt đầu hiến máu!",
@@ -445,7 +466,13 @@ module.exports = {
                     {
                         model: User,
                         as: "donor",
-                        attributes: ["id", "full_name", "email", "phone", "blood_group"],
+                        attributes: [
+                            "id",
+                            "full_name",
+                            "email",
+                            "phone",
+                            "blood_group",
+                        ],
                     },
                     {
                         model: DonationSite,
@@ -576,8 +603,13 @@ module.exports = {
             }
 
             await appointment.save({ transaction: t });
-
             await t.commit();
+
+            emitAppointmentUpdated(appointment.id, {
+                status: appointment.status,
+                event: "COMPLETE_DONATION",
+                message: "Quá trình hiến máu đã hoàn tất.",
+            });
 
             return res.status(201).json({
                 status: true,
