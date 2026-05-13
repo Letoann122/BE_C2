@@ -2,7 +2,7 @@ require("dotenv").config();
 
 const express = require("express");
 const http = require("http");
-
+const { startSlotCron } = require("./services/slotCron");
 const cookieParser = require("cookie-parser");
 const cors = require("cors");
 
@@ -66,6 +66,7 @@ const server = http.createServer(app);
 */
 initSocket(server);
 
+startSlotCron();
 /*
 |--------------------------------------------------------------------------
 | Start Server

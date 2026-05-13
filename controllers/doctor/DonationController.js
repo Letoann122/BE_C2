@@ -23,11 +23,26 @@ const {
   DONATION_ALLOWED_STATUSES,
 } = require("../../constants/appointmentStatus");
 
-// Utils
-const toDateStr = (d) => (d ? d.toISOString().slice(0, 10) : null);
-const toTimeStr = (d) => (d ? d.toTimeString().slice(0, 5) : "");
+const {
+  refreshSlotCountersByAppointment,
+  emitSlotAfterCommit,
+} = require("../../services/slotCapacityService");
 
-// ====== helpers: safe association finder ======
+const toDateStr = (d) => (d ? d.toISOString().slice(0, 10) : null);
+
+const toTimeStr = (value) => {
+  if (!value) return "";
+
+  if (typeof value === "string") {
+    return value.slice(0, 5);
+  }
+
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+
+  return d.toTimeString().slice(0, 5);
+};
+
 const pickAssoc = (SourceModel, targetName, foreignKey) => {
   const assocs = SourceModel?.associations || {};
   return Object.values(assocs).find(
@@ -37,7 +52,6 @@ const pickAssoc = (SourceModel, targetName, foreignKey) => {
   );
 };
 
-// Association mapping
 const donorAssoc = pickAssoc(Appointment, "User", "donor_id");
 const siteAssoc = pickAssoc(Appointment, "DonationSite", "donation_site_id");
 const slotAssoc = pickAssoc(
@@ -47,7 +61,6 @@ const slotAssoc = pickAssoc(
 );
 const hospitalAssoc = pickAssoc(DonationSite, "Hospital");
 
-// Getter helpers
 const getDonor = (a) => (donorAssoc ? a[donorAssoc.as] : a.donor || a.User);
 const getSite = (a) => (siteAssoc ? a[siteAssoc.as] : a.donation_site);
 const getSlot = (a) =>
@@ -59,21 +72,18 @@ const getHospitalFromSite = (site) =>
   site?.hospital ||
   null;
 
-// helper normalize date (DATE column)
 const normalizeDate = (d) => {
   const dt = new Date(d);
   dt.setHours(0, 0, 0, 0);
   return dt;
 };
 
-// helper add days
 const addDays = (d, days) => {
   const dt = new Date(d);
   dt.setDate(dt.getDate() + days);
   return dt;
 };
 
-// helper create audit log
 const createAudit = async (
   { userId, action, entity, entityId = null, details = "" },
   t
@@ -93,9 +103,6 @@ const createAudit = async (
 };
 
 module.exports = {
-  // =====================================================
-  // GET /doctor/donation-appointments/approved
-  // =====================================================
   async index(req, res) {
     try {
       const { appointment_code, from_date, to_date } = req.query;
@@ -239,9 +246,6 @@ module.exports = {
     }
   },
 
-  // =====================================================
-  // POST /doctor/donations/complete
-  // =====================================================
   async completeDonation(req, res) {
     const t = await sequelize.transaction();
 
@@ -255,25 +259,33 @@ module.exports = {
         notes,
       } = req.body;
 
-      if (!appointment_id)
+      if (!appointment_id) {
+        await t.rollback();
         return res
           .status(400)
           .json({ status: false, message: "Thiếu appointment_id!" });
+      }
 
-      if (!blood_group)
+      if (!blood_group) {
+        await t.rollback();
         return res
           .status(400)
           .json({ status: false, message: "Vui lòng chọn nhóm máu!" });
+      }
 
-      if (!volume_ml || Number(volume_ml) <= 0)
+      if (!volume_ml || Number(volume_ml) <= 0) {
+        await t.rollback();
         return res
           .status(400)
           .json({ status: false, message: "Số lượng ml không hợp lệ!" });
+      }
 
-      if (!collected_at)
+      if (!collected_at) {
+        await t.rollback();
         return res
           .status(400)
           .json({ status: false, message: "Thiếu thời điểm lấy máu!" });
+      }
 
       const loggedUserId = req.user?.userId;
 
@@ -387,6 +399,10 @@ module.exports = {
       appointment.completed_at = new Date();
       await appointment.save({ transaction: t });
 
+      const slotId = appointment.appointment_slot_id || appointment.slot_id;
+
+      await refreshSlotCountersByAppointment(appointment, t);
+
       await createAudit(
         {
           userId: loggedUserId,
@@ -426,9 +442,7 @@ module.exports = {
           entityId: inventory.id,
           details: `inventory created: units=${units}, screened_ok=${
             screenedOkBool ? 1 : 0
-          }, quality_note=${
-            screenedOkBool ? "null" : "Không đạt sàng lọc"
-          }`,
+          }, quality_note=${screenedOkBool ? "null" : "Không đạt sàng lọc"}`,
         },
         t
       );
@@ -462,6 +476,8 @@ module.exports = {
       );
 
       await t.commit();
+
+      await emitSlotAfterCommit(slotId);
 
       try {
         const donor = await User.findByPk(appointment.donor_id);

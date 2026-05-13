@@ -23,6 +23,10 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.BIGINT,
         allowNull: true,
       },
+      slot_id: {
+        type: DataTypes.BIGINT,
+        allowNull: true,
+      },
       campaign_id: {
         type: DataTypes.BIGINT,
         allowNull: true,
@@ -68,7 +72,6 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.STRING(255),
         allowNull: true,
       },
-
       checked_in_at: {
         type: DataTypes.DATE,
         allowNull: true,
@@ -93,7 +96,6 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.DATE,
         allowNull: true,
       },
-
       created_at: {
         type: DataTypes.DATE,
         defaultValue: sequelize.literal("CURRENT_TIMESTAMP"),
@@ -123,6 +125,11 @@ module.exports = (sequelize, DataTypes) => {
     Appointment.belongsTo(models.AppointmentSlot, {
       foreignKey: "appointment_slot_id",
       as: "slot",
+    });
+
+    Appointment.belongsTo(models.AppointmentSlot, {
+      foreignKey: "slot_id",
+      as: "legacy_slot",
     });
 
     Appointment.belongsTo(models.Campaign, {
