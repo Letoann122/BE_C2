@@ -29,6 +29,7 @@ const ProfileController = require("../controllers/ProfileController");
 const ChangePasswordController = require("../controllers/ChangePassController");
 const DonorController = require("../controllers/donor/DonorController");
 const NearbyDonationController = require("../controllers/donor/NearbyDonationController");
+const AchievementController = require("../controllers/donor/AchievementController");
 
 // ===== DOCTOR =====
 const DoctorController = require("../controllers/doctor/DoctorController");
@@ -44,6 +45,7 @@ const CampaignsController = require("../controllers/doctor/CampaignsController")
 const CheckinController = require("../controllers/doctor/CheckinController");
 const DonationProcessController = require("../controllers/doctor/DonationProcessController");
 const SlotTemplateController = require("../controllers/SlotTemplateController");
+const LeaderboardController = require("../controllers/doctor/LeaderboardController");
 
 // ===== ADMIN =====
 const AdminController = require("../controllers/admin/AdminController");
@@ -63,6 +65,7 @@ const BloodInventoryDashboardController = require("../controllers/admin/BloodInv
 const AdminNewsController = require("../controllers/admin/AdminNewsController");
 const ContactController = require("../controllers/donor/ContactController");
 const AppointmentSlotController = require("../controllers/AppointmentSlotController");
+const AchievementAdminController = require("../controllers/admin/AchievementAdminController");
 
 // ==================== AUTH ====================
 router.post(
@@ -110,6 +113,9 @@ donorRouter.post("/register-campaigns", CampaignController.donorCreateAppointmen
 donorRouter.get("/donation-history", DonationHistoryController.index);
 donorRouter.get("/nearby-donations", NearbyDonationController.index);
 donorRouter.get("/appointment-process/detail", DonationProcessController.detail);
+
+donorRouter.get("/achievements/profile", AchievementController.profile);
+donorRouter.post("/achievements/sync", AchievementController.sync);
 
 router.use("/donor", verifyToken("donor"), donorRouter);
 
@@ -190,6 +196,10 @@ doctorRouter.post("/blood-testing/approve", BloodInventoryController.approveTest
 doctorRouter.post("/blood-testing/reject", BloodInventoryController.rejectTesting);
 doctorRouter.patch("/support/notifications/:id/close", SendNotificationController.closeNotification);
 
+doctorRouter.get("/leaderboard", LeaderboardController.index);
+doctorRouter.get("/leaderboard/campaign", LeaderboardController.campaign);
+doctorRouter.get("/leaderboard/emergency", LeaderboardController.emergency);
+
 router.use("/doctor", verifyToken("doctor"), doctorRouter);
 
 // ==================== ADMIN ROUTES ====================
@@ -245,6 +255,12 @@ adminRouter.get("/campaigns/:id/appointments", CampaignsController.getCampaignAp
 adminRouter.put("/campaigns/:id", CampaignsController.updateCampaign);
 adminRouter.patch("/campaigns/:id/close", CampaignsController.closeCampaign);
 adminRouter.get("/donation-sites", CampaignsManagementController.getDonationSites);
+
+adminRouter.get("/achievements", AchievementAdminController.index);
+adminRouter.post("/achievements", AchievementAdminController.store);
+adminRouter.put("/achievements/:id", AchievementAdminController.update);
+adminRouter.patch("/achievements/:id/toggle", AchievementAdminController.toggle);
+adminRouter.delete("/achievements/:id", AchievementAdminController.destroy);
 
 adminRouter.get("/campaign-registrations", CampaignController.adminListCampaignRegistrations);
 adminRouter.patch(
