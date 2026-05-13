@@ -16,6 +16,9 @@ const {
 } = require("../../models");
 
 const {
+  syncDonorAchievements,
+} = require("../../services/achievementService");
+const {
   buildSlotPayload,
   refreshSlotCountersByAppointment,
   emitSlotAfterCommit,
@@ -684,6 +687,8 @@ module.exports = {
       const slotId = appointment.appointment_slot_id || appointment.slot_id;
 
       await refreshSlotCountersByAppointment(appointment, t);
+
+      await syncDonorAchievements(appointment.donor_id, t);
 
       await t.commit();
 

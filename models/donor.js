@@ -15,7 +15,33 @@ module.exports = (sequelize, DataTypes) => {
       birthday: DataTypes.DATE,
       medical_history: DataTypes.TEXT,
       last_donation_date: DataTypes.DATE,
-      donation_count: DataTypes.INTEGER,
+      donation_count: {
+        type: DataTypes.INTEGER,
+        defaultValue: 0,
+      },
+
+      // GAMIFICATION
+      exp_points: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 0,
+      },
+      donor_rank: {
+        type: DataTypes.STRING(50),
+        allowNull: false,
+        defaultValue: "bronze",
+      },
+      total_blood_ml: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 0,
+      },
+      emergency_donation_count: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 0,
+      },
+
       tinh_trang: DataTypes.TINYINT,
       created_at: DataTypes.DATE,
       updated_at: DataTypes.DATE,
