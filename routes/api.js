@@ -68,12 +68,7 @@ const AppointmentSlotController = require("../controllers/AppointmentSlotControl
 const AchievementAdminController = require("../controllers/admin/AchievementAdminController");
 
 // ==================== AUTH ====================
-router.post(
-  "/register",
-  CreateTaiKhoanRequest,
-  validateRequest,
-  RegisterController.register
-);
+router.post("/register", CreateTaiKhoanRequest, validateRequest, RegisterController.register);
 router.post("/login", LoginRequest, validateRequest, LoginController.login);
 router.get("/logout", LogoutController.logout);
 
@@ -174,10 +169,7 @@ doctorRouter.post("/campaigns", CampaignsController.createCampaign);
 doctorRouter.put("/campaigns/:id", CampaignsController.updateCampaign);
 doctorRouter.patch("/campaigns/:id/close", CampaignsController.closeCampaign);
 doctorRouter.get("/campaigns/:id/appointments", CampaignsController.getCampaignAppointments);
-doctorRouter.post(
-  "/campaigns/:campaign_id/generate-slots",
-  AppointmentSlotController.generateCampaign
-);
+doctorRouter.post("/campaigns/:campaign_id/generate-slots", AppointmentSlotController.generateCampaign);
 
 doctorRouter.get("/support/notifications", SendNotificationController.listNotifications);
 doctorRouter.post("/support/notifications", SendNotificationController.sendNotification);
@@ -234,10 +226,7 @@ adminRouter.get("/appointment-slots/:id/appointments", AppointmentSlotController
 adminRouter.get("/slot-templates", SlotTemplateController.index);
 adminRouter.put("/slot-templates/:id", SlotTemplateController.update);
 adminRouter.post("/slot-templates/generate", SlotTemplateController.generate);
-adminRouter.post(
-  "/campaigns/:campaign_id/generate-slots",
-  AppointmentSlotController.generateCampaign
-);
+adminRouter.post("/campaigns/:campaign_id/generate-slots", AppointmentSlotController.generateCampaign);
 // Quản lý lịch hẹn
 adminRouter.get("/appointments", AppointmentAdminController.index);
 adminRouter.post("/appointments/bulk-approve", AppointmentAdminController.bulkApprove);
@@ -263,14 +252,8 @@ adminRouter.patch("/achievements/:id/toggle", AchievementAdminController.toggle)
 adminRouter.delete("/achievements/:id", AchievementAdminController.destroy);
 
 adminRouter.get("/campaign-registrations", CampaignController.adminListCampaignRegistrations);
-adminRouter.patch(
-  "/campaign-registrations/:id/approve",
-  CampaignController.adminApproveCampaignRegistration
-);
-adminRouter.patch(
-  "/campaign-registrations/:id/reject",
-  CampaignController.adminRejectCampaignRegistration
-);
+adminRouter.patch("/campaign-registrations/:id/approve", CampaignController.adminApproveCampaignRegistration);
+adminRouter.patch("/campaign-registrations/:id/reject", CampaignController.adminRejectCampaignRegistration);
 
 adminRouter.get("/blood-inventory/dashboard", BloodInventoryDashboardController.getDashboard);
 
