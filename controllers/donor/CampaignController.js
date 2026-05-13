@@ -1,11 +1,28 @@
 "use strict";
 
 const { Op } = require("sequelize");
-const { Campaign, DonationSite, Appointment } = require("../../models");
+const {
+  sequelize,
+  Campaign,
+  DonationSite,
+  Appointment,
+  AppointmentSlot,
+} = require("../../models");
+const {
+  generateAppointmentCode,
+} = require("../../utils/generateAppointmentCode");
 const {
   APPOINTMENT_STATUS,
   ACTIVE_APPOINTMENT_STATUSES,
 } = require("../../constants/appointmentStatus");
+
+const {
+  createAppointmentWithSlotCapacity,
+  refreshSlotCounters,
+  getSlotIdFromAppointment,
+} = require("../../services/slotCapacityService");
+
+const { emitAppointmentUpdated } = require("../../socket");
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
@@ -13,6 +30,7 @@ const computeCampaignStatus = (start_date, end_date) => {
   const t = todayStr();
   const s = String(start_date).slice(0, 10);
   const e = String(end_date).slice(0, 10);
+
   if (t < s) return "upcoming";
   if (t > e) return "ended";
   return "running";
@@ -23,21 +41,23 @@ const buildLocationDisplay = (raw) => {
     const ds = raw.donation_site;
     if (ds) return [ds.name, ds.address].filter(Boolean).join(" – ");
   }
-  return raw.location || "";
-};
 
-const buildScheduledAtFromDateAndSlot = (dateStr, time_slot) => {
-  const left = String(time_slot || "7:00").split("-")[0].trim();
-  const [hh, mm] = left.split(":");
-  const [Y, M, D] = String(dateStr).split("-").map(Number);
-  return new Date(Y, (M || 1) - 1, D || 1, Number(hh || 7), Number(mm || 0), 0);
+  return raw.location || "";
 };
 
 const normalizePreferredVolume = (v) => {
   if (v == null || v === "") return null;
+
   const n = Number(String(v).replace(/[^\d]/g, ""));
-  return Number.isFinite(n) && n > 0 ? n : null;
+
+  if ([250, 350, 450].includes(n)) {
+    return n;
+  }
+
+  return null;
 };
+
+
 
 module.exports = {
   async publicCampaigns(req, res) {
@@ -45,7 +65,9 @@ module.exports = {
       const { status = "active" } = req.query;
       const t = todayStr();
 
-      const where = { approval_status: "approved" };
+      const where = {
+        approval_status: "approved",
+      };
 
       if (status === "active") {
         where.end_date = { [Op.gte]: t };
@@ -72,6 +94,7 @@ module.exports = {
 
       const data = campaigns.map((c) => {
         const raw = c.toJSON();
+
         return {
           id: raw.id,
           title: raw.title,
@@ -79,6 +102,7 @@ module.exports = {
           start_date: raw.start_date,
           end_date: raw.end_date,
           is_emerge: raw.is_emerge,
+          is_emergency: raw.is_emergency,
           locate_type: raw.locate_type,
           donation_site_id: raw.donation_site_id,
           location: raw.location,
@@ -87,10 +111,17 @@ module.exports = {
         };
       });
 
-      return res.json({ status: true, data });
+      return res.json({
+        status: true,
+        data,
+      });
     } catch (err) {
       console.error("CampaignController.publicCampaigns error:", err);
-      return res.status(500).json({ status: false, message: err.message });
+
+      return res.status(500).json({
+        status: false,
+        message: err.message,
+      });
     }
   },
 
@@ -99,7 +130,10 @@ module.exports = {
       const { id } = req.params;
 
       const campaign = await Campaign.findOne({
-        where: { id, approval_status: "approved" },
+        where: {
+          id,
+          approval_status: "approved",
+        },
         include: [
           {
             model: DonationSite,
@@ -128,54 +162,123 @@ module.exports = {
       });
     } catch (err) {
       console.error("CampaignController.publicCampaignDetail error:", err);
-      return res.status(500).json({ status: false, message: err.message });
+
+      return res.status(500).json({
+        status: false,
+        message: err.message,
+      });
     }
   },
 
   async donorCreateAppointment(req, res) {
+    const t = await sequelize.transaction();
+
     try {
       const donor_id = req.user?.userId || req.user?.id;
-      const { campaign_id, date, time_slot, preferred_volume_ml, notes } = req.body;
 
-      if (!campaign_id) {
-        return res.json({ status: false, message: "Thiếu campaign_id!" });
-      }
+      const {
+        campaign_id,
+        appointment_slot_id,
+        slot_id,
+        preferred_volume_ml,
+        notes,
+      } = req.body;
 
-      if (!date || !time_slot) {
-        return res.json({ status: false, message: "Thiếu ngày hoặc khung giờ!" });
-      }
+      const selectedSlotId = appointment_slot_id || slot_id;
 
-      const campaign = await Campaign.findOne({
-        where: { id: campaign_id, approval_status: "approved" },
-      });
+      if (!donor_id) {
+        await t.rollback();
 
-      if (!campaign) {
-        return res.json({ status: false, message: "Chiến dịch không hợp lệ!" });
-      }
-
-      const camp = campaign.toJSON();
-      const st = computeCampaignStatus(camp.start_date, camp.end_date);
-
-      if (st === "ended") {
-        return res.json({ status: false, message: "Chiến dịch đã kết thúc!" });
-      }
-
-      const dStr = String(date);
-      const sStr = String(camp.start_date).slice(0, 10);
-      const eStr = String(camp.end_date).slice(0, 10);
-
-      if (dStr < sStr || dStr > eStr) {
-        return res.json({
+        return res.status(401).json({
           status: false,
-          message: `Ngày phải trong ${sStr} - ${eStr}`,
+          message: "Vui lòng đăng nhập!",
         });
       }
 
-      const scheduled_at = buildScheduledAtFromDateAndSlot(dStr, time_slot);
-      const scheduledDate = new Date(scheduled_at);
-      const now = new Date();
+      if (!campaign_id) {
+        await t.rollback();
 
-      if (scheduledDate < now) {
+        return res.json({
+          status: false,
+          message: "Thiếu campaign_id!",
+        });
+      }
+
+      if (!selectedSlotId) {
+        await t.rollback();
+
+        return res.json({
+          status: false,
+          message: "Vui lòng chọn khung giờ hiến máu!",
+        });
+      }
+
+      const campaign = await Campaign.findOne({
+        where: {
+          id: campaign_id,
+          approval_status: "approved",
+        },
+        transaction: t,
+      });
+
+      if (!campaign) {
+        await t.rollback();
+
+        return res.json({
+          status: false,
+          message: "Chiến dịch không hợp lệ!",
+        });
+      }
+
+      const camp = campaign.toJSON();
+      const campaignStatus = computeCampaignStatus(camp.start_date, camp.end_date);
+
+      if (campaignStatus === "ended") {
+        await t.rollback();
+
+        return res.json({
+          status: false,
+          message: "Chiến dịch đã kết thúc!",
+        });
+      }
+
+      const slot = await AppointmentSlot.findOne({
+        where: {
+          id: selectedSlotId,
+          campaign_id: camp.id,
+          type: "campaign",
+        },
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
+
+      if (!slot) {
+        await t.rollback();
+
+        return res.json({
+          status: false,
+          message: "Khung giờ không thuộc chiến dịch này!",
+        });
+      }
+
+      const slotDate = String(slot.slot_date).slice(0, 10);
+      const campaignStart = String(camp.start_date).slice(0, 10);
+      const campaignEnd = String(camp.end_date).slice(0, 10);
+
+      if (slotDate < campaignStart || slotDate > campaignEnd) {
+        await t.rollback();
+
+        return res.json({
+          status: false,
+          message: `Ngày hiến phải nằm trong ${campaignStart} - ${campaignEnd}`,
+        });
+      }
+
+      const scheduledDate = new Date(`${slotDate}T${slot.start_time}`);
+
+      if (scheduledDate < new Date()) {
+        await t.rollback();
+
         return res.json({
           status: false,
           message: "Khung giờ bạn chọn đã trôi qua. Vui lòng chọn thời gian khác!",
@@ -188,15 +291,20 @@ module.exports = {
           status: APPOINTMENT_STATUS.COMPLETED,
         },
         order: [["scheduled_at", "DESC"]],
+        transaction: t,
       });
 
       if (lastDonation) {
         const lastDate = new Date(lastDonation.scheduled_at);
         const nextAllowedDate = new Date(lastDate);
+
         nextAllowedDate.setMonth(nextAllowedDate.getMonth() + 3);
 
         if (scheduledDate < nextAllowedDate) {
           const dateStr = nextAllowedDate.toLocaleDateString("vi-VN");
+
+          await t.rollback();
+
           return res.json({
             status: false,
             message: `Bạn cần nghỉ ngơi sau lần hiến trước. Bạn có thể hiến máu lại từ ngày ${dateStr}.`,
@@ -209,13 +317,17 @@ module.exports = {
         scheduledDate.getMonth(),
         scheduledDate.getDate()
       );
+
       const nextDay = new Date(sameDay);
       nextDay.setDate(nextDay.getDate() + 1);
 
       const existed = await Appointment.findOne({
         where: {
           donor_id,
-          scheduled_at: { [Op.gte]: sameDay, [Op.lt]: nextDay },
+          scheduled_at: {
+            [Op.gte]: sameDay,
+            [Op.lt]: nextDay,
+          },
           status: {
             [Op.in]: [
               ...ACTIVE_APPOINTMENT_STATUSES,
@@ -223,9 +335,12 @@ module.exports = {
             ],
           },
         },
+        transaction: t,
       });
 
       if (existed) {
+        await t.rollback();
+
         return res.json({
           status: false,
           message: "Bạn đã có lịch đăng ký hoặc đã hiến máu trong ngày này!",
@@ -235,14 +350,18 @@ module.exports = {
       let donation_site_id = null;
 
       if (camp.locate_type === "donation_site") {
-        donation_site_id = camp.donation_site_id || null;
+        donation_site_id = camp.donation_site_id || slot.donation_site_id || null;
 
         if (!donation_site_id) {
+          await t.rollback();
+
           return res.json({
             status: false,
             message: "Chiến dịch thiếu donation_site_id!",
           });
         }
+      } else {
+        donation_site_id = slot.donation_site_id || null;
       }
 
       const extraLoc =
@@ -252,16 +371,26 @@ module.exports = {
 
       const notesFinal = [notes?.trim(), extraLoc].filter(Boolean).join("\n");
 
-      const created = await Appointment.create({
-        donor_id,
-        donation_site_id,
-        campaign_id: camp.id,
-        appointment_slot_id: null,
-        scheduled_at,
-        preferred_volume_ml: normalizePreferredVolume(preferred_volume_ml),
-        notes: notesFinal || null,
-        time_slot,
-        status: APPOINTMENT_STATUS.REQUESTED,
+      const appointment_code = generateAppointmentCode("CD");
+      const created = await createAppointmentWithSlotCapacity({
+        slotId: selectedSlotId,
+        appointmentPayload: {
+          appointment_code,
+          donor_id,
+          donation_site_id,
+          campaign_id: camp.id,
+          preferred_volume_ml: normalizePreferredVolume(preferred_volume_ml),
+          notes: notesFinal || null,
+          status: APPOINTMENT_STATUS.REQUESTED,
+        },
+        transaction: t,
+      });
+
+      await t.commit();
+
+      emitAppointmentUpdated(created.id, {
+        status: created.status,
+        appointment: created,
       });
 
       return res.json({
@@ -270,8 +399,14 @@ module.exports = {
         data: created,
       });
     } catch (err) {
+      await t.rollback();
+
       console.error("CampaignController.donorCreateAppointment error:", err);
-      return res.status(500).json({ status: false, message: err.message });
+
+      return res.status(500).json({
+        status: false,
+        message: err.message,
+      });
     }
   },
 
@@ -279,19 +414,44 @@ module.exports = {
     try {
       const { status } = req.query;
 
-      const where = { campaign_id: { [Op.ne]: null } };
-      if (status) where.status = status;
+      const where = {
+        campaign_id: {
+          [Op.ne]: null,
+        },
+      };
+
+      if (status) {
+        where.status = status;
+      }
 
       const rows = await Appointment.findAll({
         where,
-        include: [{ model: Campaign, as: "campaign", required: false }],
+        include: [
+          {
+            model: Campaign,
+            as: "campaign",
+            required: false,
+          },
+          {
+            model: AppointmentSlot,
+            as: "slot",
+            required: false,
+          },
+        ],
         order: [["created_at", "DESC"]],
       });
 
-      return res.json({ status: true, data: rows });
+      return res.json({
+        status: true,
+        data: rows,
+      });
     } catch (err) {
       console.error("adminListCampaignRegistrations error:", err);
-      return res.status(500).json({ status: false, message: err.message });
+
+      return res.status(500).json({
+        status: false,
+        message: err.message,
+      });
     }
   },
 
@@ -301,7 +461,12 @@ module.exports = {
       const { id } = req.params;
 
       const appt = await Appointment.findOne({
-        where: { id, campaign_id: { [Op.ne]: null } },
+        where: {
+          id,
+          campaign_id: {
+            [Op.ne]: null,
+          },
+        },
       });
 
       if (!appt) {
@@ -323,6 +488,12 @@ module.exports = {
         approved_by_admin_id: admin_id,
         approved_at: new Date(),
         rejected_reason: null,
+        updated_at: new Date(),
+      });
+
+      emitAppointmentUpdated(appt.id, {
+        status: APPOINTMENT_STATUS.APPROVED,
+        appointment_id: appt.id,
       });
 
       return res.json({
@@ -331,17 +502,25 @@ module.exports = {
       });
     } catch (err) {
       console.error("adminApproveCampaignRegistration error:", err);
-      return res.status(500).json({ status: false, message: err.message });
+
+      return res.status(500).json({
+        status: false,
+        message: err.message,
+      });
     }
   },
 
   async adminRejectCampaignRegistration(req, res) {
+    const t = await sequelize.transaction();
+
     try {
       const admin_id = req.user?.userId || req.user?.id;
       const { id } = req.params;
       const { rejected_reason } = req.body;
 
       if (!rejected_reason || !String(rejected_reason).trim()) {
+        await t.rollback();
+
         return res.status(422).json({
           status: false,
           message: "Vui lòng nhập lý do từ chối!",
@@ -349,10 +528,19 @@ module.exports = {
       }
 
       const appt = await Appointment.findOne({
-        where: { id, campaign_id: { [Op.ne]: null } },
+        where: {
+          id,
+          campaign_id: {
+            [Op.ne]: null,
+          },
+        },
+        transaction: t,
+        lock: t.LOCK.UPDATE,
       });
 
       if (!appt) {
+        await t.rollback();
+
         return res.status(404).json({
           status: false,
           message: "Không tìm thấy đăng ký!",
@@ -360,17 +548,38 @@ module.exports = {
       }
 
       if (appt.status !== APPOINTMENT_STATUS.REQUESTED) {
+        await t.rollback();
+
         return res.status(422).json({
           status: false,
           message: "Chỉ từ chối khi lịch đang ở trạng thái chờ duyệt!",
         });
       }
 
-      await appt.update({
+      const slotId = getSlotIdFromAppointment(appt);
+
+      await appt.update(
+        {
+          status: APPOINTMENT_STATUS.REJECTED,
+          rejected_reason: String(rejected_reason).trim(),
+          approved_by_admin_id: admin_id,
+          approved_at: new Date(),
+          updated_at: new Date(),
+        },
+        {
+          transaction: t,
+        }
+      );
+
+      await t.commit();
+
+      if (slotId) {
+        await refreshSlotCounters(slotId);
+      }
+
+      emitAppointmentUpdated(appt.id, {
         status: APPOINTMENT_STATUS.REJECTED,
-        rejected_reason: String(rejected_reason).trim(),
-        approved_by_admin_id: admin_id,
-        approved_at: new Date(),
+        appointment_id: appt.id,
       });
 
       return res.json({
@@ -378,8 +587,14 @@ module.exports = {
         message: "Đã từ chối đăng ký chiến dịch!",
       });
     } catch (err) {
+      await t.rollback();
+
       console.error("adminRejectCampaignRegistration error:", err);
-      return res.status(500).json({ status: false, message: err.message });
+
+      return res.status(500).json({
+        status: false,
+        message: err.message,
+      });
     }
   },
 };

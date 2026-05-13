@@ -30,6 +30,20 @@ function initSocket(server) {
       console.log(`📤 ${socket.id} left appointment_${appointmentId}`);
     });
 
+    socket.on("join_slot", (slotId) => {
+      if (!slotId) return;
+
+      socket.join(`slot_${slotId}`);
+      console.log(`📌 ${socket.id} joined slot_${slotId}`);
+    });
+
+    socket.on("leave_slot", (slotId) => {
+      if (!slotId) return;
+
+      socket.leave(`slot_${slotId}`);
+      console.log(`📤 ${socket.id} left slot_${slotId}`);
+    });
+
     socket.on("disconnect", () => {
       console.log("🔴 Socket disconnected:", socket.id);
     });
@@ -49,6 +63,20 @@ function emitAppointmentUpdated(appointmentId, payload = {}) {
   });
 }
 
+function emitSlotUpdated(slotId, payload = {}) {
+  if (!io || !slotId) return;
+
+  io.to(`slot_${slotId}`).emit("slot_updated", {
+    slot_id: slotId,
+    ...payload,
+  });
+
+  io.emit("slot_capacity_updated", {
+    slot_id: slotId,
+    ...payload,
+  });
+}
+
 function emitEmergencyAlertUpdated(payload = {}) {
   if (!io) return;
 
@@ -58,5 +86,6 @@ function emitEmergencyAlertUpdated(payload = {}) {
 module.exports = {
   initSocket,
   emitAppointmentUpdated,
+  emitSlotUpdated,
   emitEmergencyAlertUpdated,
 };

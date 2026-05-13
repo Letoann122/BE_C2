@@ -7,9 +7,15 @@ const {
   Doctor,
   DonationSite,
   Campaign,
+  AppointmentSlot,
   sequelize,
 } = require("../../models");
 const emailQueue = require("../../services/emailQueue");
+
+const {
+  recalculateSlotCount,
+  emitSlotAfterCommit,
+} = require("../../services/slotCapacityService");
 
 const toVNDate = (d) => {
   if (!d) return null;
@@ -19,7 +25,40 @@ const toVNDate = (d) => {
   const year = dt.getFullYear();
   return `${day}/${month}/${year}`;
 };
-const toTimeStr = (d) => (d ? d.toTimeString().slice(0, 5) : null);
+
+const toTimeStr = (value) => {
+  if (!value) return null;
+
+  if (typeof value === "string") {
+    return value.slice(0, 5);
+  }
+
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+
+  return d.toTimeString().slice(0, 5);
+};
+
+const serializeSlot = (slot) => {
+  if (!slot) return null;
+
+  const raw = typeof slot.toJSON === "function" ? slot.toJSON() : slot;
+
+  const start = raw.start_time ? String(raw.start_time).slice(0, 5) : "";
+  const end = raw.end_time ? String(raw.end_time).slice(0, 5) : "";
+
+  const slotCapacity = Number(raw.slot_capacity || 0);
+  const currentCount = Number(raw.current_count || 0);
+
+  return {
+    ...raw,
+    time_slot_label: start && end ? `${start} - ${end}` : "-",
+    available_count: Math.max(slotCapacity - currentCount, 0),
+    percent:
+      slotCapacity > 0 ? Math.round((currentCount / slotCapacity) * 100) : 0,
+    is_full: currentCount >= slotCapacity,
+  };
+};
 
 module.exports = {
   async index(req, res) {
@@ -34,9 +73,9 @@ module.exports = {
                 WHERE donations.appointment_id = Appointment.id
                 LIMIT 1
               )`),
-              "actual_volume_ml"
-            ]
-          ]
+              "actual_volume_ml",
+            ],
+          ],
         },
         include: [
           {
@@ -48,6 +87,11 @@ module.exports = {
             model: DonationSite,
             as: "donation_site",
             attributes: ["id", "name"],
+          },
+          {
+            model: AppointmentSlot,
+            as: "slot",
+            required: false,
           },
           {
             model: Campaign,
@@ -66,6 +110,8 @@ module.exports = {
 
       const data = rows.map((a) => {
         const x = a.toJSON();
+        const slotInfo = x.slot ? serializeSlot(x.slot) : null;
+
         return {
           id: x.id,
           code: x.appointment_code,
@@ -77,7 +123,8 @@ module.exports = {
           },
           siteId: x.donation_site?.id,
           site: x.donation_site?.name || "—",
-          slot: toTimeStr(x.scheduled_at),
+          slot: slotInfo ? slotInfo.time_slot_label : toTimeStr(x.scheduled_at),
+          slot_info: slotInfo,
           date: toVNDate(x.scheduled_at),
           status: x.status,
           doctorName: x.approved_doctor?.User?.full_name || "—",
@@ -88,19 +135,23 @@ module.exports = {
           notes: x.notes,
         };
       });
+
       const doctorRows = await Doctor.findAll({
         include: [{ model: User, as: "User", attributes: ["full_name"] }],
         attributes: ["id"],
         order: [[sequelize.col("User.full_name"), "ASC"]],
       });
+
       const doctors = doctorRows.map((d) => ({
         id: d.id,
         name: d.User?.full_name || "",
       }));
+
       const sites = await DonationSite.findAll({
         attributes: ["id", "name"],
         order: [["name", "ASC"]],
       });
+
       return res.json({
         status: true,
         data,
@@ -115,6 +166,7 @@ module.exports = {
       });
     }
   },
+
   async detail(req, res) {
     try {
       const rows = await Appointment.findAll({
@@ -122,6 +174,7 @@ module.exports = {
         include: [
           { model: User, as: "donor" },
           { model: DonationSite, as: "donation_site" },
+          { model: AppointmentSlot, as: "slot", required: false },
           { model: Campaign, as: "campaign" },
           {
             model: Doctor,
@@ -130,9 +183,18 @@ module.exports = {
           },
         ],
       });
+
       const x = rows[0]?.toJSON();
-      if (!x)
-        return res.status(404).json({ status: false, message: "Không tìm thấy lịch!" });
+
+      if (!x) {
+        return res.status(404).json({
+          status: false,
+          message: "Không tìm thấy lịch!",
+        });
+      }
+
+      const slotInfo = x.slot ? serializeSlot(x.slot) : null;
+
       return res.json({
         status: true,
         data: {
@@ -145,7 +207,8 @@ module.exports = {
             blood: x.donor?.blood_group,
           },
           site: x.donation_site?.name,
-          slot: toTimeStr(x.scheduled_at),
+          slot: slotInfo ? slotInfo.time_slot_label : toTimeStr(x.scheduled_at),
+          slot_info: slotInfo,
           date: toVNDate(x.scheduled_at),
           notes: x.notes,
           status: x.status,
@@ -160,16 +223,20 @@ module.exports = {
       return res.status(500).json({ status: false, message: "Server error" });
     }
   },
+
   async bulkApprove(req, res) {
     const t = await sequelize.transaction();
+
     try {
       const { ids, note } = req.body;
       const adminId = req.user?.userId;
+
       const apps = await Appointment.findAll({
         where: { id: { [Op.in]: ids } },
         transaction: t,
       });
-      const invalid = apps.filter(a => a.status !== "REQUESTED");
+
+      const invalid = apps.filter((a) => a.status !== "REQUESTED");
       if (invalid.length > 0) {
         await t.rollback();
         return res.json({
@@ -177,6 +244,7 @@ module.exports = {
           message: "Chỉ duyệt những lịch có trạng thái REQUESTED.",
         });
       }
+
       await Appointment.update(
         {
           status: "APPROVED",
@@ -189,11 +257,15 @@ module.exports = {
           transaction: t,
         }
       );
+
       const appsMail = await Appointment.findAll({
         where: { id: { [Op.in]: ids } },
-        include: [{ model: User, as: "donor", attributes: ["email", "full_name"] }],
+        include: [
+          { model: User, as: "donor", attributes: ["email", "full_name"] },
+        ],
         transaction: t,
       });
+
       for (const a of appsMail) {
         await emailQueue.enqueue({
           email: a.donor.email,
@@ -206,16 +278,18 @@ module.exports = {
           },
         });
       }
+
       await t.commit();
       return res.json({ status: true, message: "Duyệt thành công!" });
-
     } catch (e) {
       await t.rollback();
       return res.status(500).json({ status: false, message: "Lỗi server!" });
     }
   },
+
   async bulkCancel(req, res) {
     const t = await sequelize.transaction();
+
     try {
       const { ids, note } = req.body;
 
@@ -223,14 +297,26 @@ module.exports = {
         where: { id: { [Op.in]: ids } },
         transaction: t,
       });
-      const invalid = apps.filter(a => !["REQUESTED", "APPROVED"].includes(a.status));
+
+      const invalid = apps.filter(
+        (a) => !["REQUESTED", "APPROVED"].includes(a.status)
+      );
+
       if (invalid.length > 0) {
         await t.rollback();
         return res.json({
           status: false,
-          message: "Chỉ được huỷ những lịch có trạng thái REQUESTED hoặc APPROVED.",
+          message:
+            "Chỉ được huỷ những lịch có trạng thái REQUESTED hoặc APPROVED.",
         });
       }
+
+      const affectedSlotIds = [
+        ...new Set(
+          apps.map((a) => a.appointment_slot_id || a.slot_id).filter(Boolean)
+        ),
+      ];
+
       await Appointment.update(
         {
           status: "CANCELLED",
@@ -242,11 +328,19 @@ module.exports = {
           transaction: t,
         }
       );
+
+      for (const slotId of affectedSlotIds) {
+        await recalculateSlotCount(slotId, t);
+      }
+
       const appsMail = await Appointment.findAll({
         where: { id: { [Op.in]: ids } },
-        include: [{ model: User, as: "donor", attributes: ["email", "full_name"] }],
+        include: [
+          { model: User, as: "donor", attributes: ["email", "full_name"] },
+        ],
         transaction: t,
       });
+
       for (const a of appsMail) {
         await emailQueue.enqueue({
           email: a.donor.email,
@@ -259,20 +353,31 @@ module.exports = {
           },
         });
       }
+
       await t.commit();
+
+      for (const slotId of affectedSlotIds) {
+        await emitSlotAfterCommit(slotId);
+      }
+
       return res.json({ status: true, message: "Huỷ thành công!" });
     } catch (e) {
       await t.rollback();
       return res.status(500).json({ status: false, message: "Lỗi server!" });
     }
   },
+
   async bulkNotify(req, res) {
     try {
       const { ids, note } = req.body;
+
       const apps = await Appointment.findAll({
         where: { id: { [Op.in]: ids } },
-        include: [{ model: User, as: "donor", attributes: ["email", "full_name"] }],
+        include: [
+          { model: User, as: "donor", attributes: ["email", "full_name"] },
+        ],
       });
+
       for (const a of apps) {
         await emailQueue.enqueue({
           email: a.donor.email,
@@ -285,6 +390,7 @@ module.exports = {
           },
         });
       }
+
       return res.json({ status: true, message: "Đã gửi thông báo!" });
     } catch (e) {
       return res.status(500).json({ status: false, message: "Lỗi server!" });

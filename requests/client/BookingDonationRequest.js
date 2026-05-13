@@ -1,7 +1,7 @@
 const { DonationSite } = require("../../models");
+const { getSlotDefinitionByLabel } = require("../../services/slotCapacityService");
 
 const ALLOWED_VOLUMES = [250, 350, 450];
-const ALLOWED_SLOTS = ["7:00 - 11:00", "13:00 - 17:00"];
 
 module.exports = async (req, res, next) => {
   const {
@@ -20,7 +20,8 @@ module.exports = async (req, res, next) => {
   } else {
     const site = await DonationSite.findByPk(Number(donation_site_id));
     if (!site) errors.donation_site_id = ["Địa điểm hiến máu không tồn tại!"];
-    else if (!site.is_active) errors.donation_site_id = ["Địa điểm hiến máu đang tạm ngưng hoạt động!"];
+    else if (!site.is_active)
+      errors.donation_site_id = ["Địa điểm hiến máu đang tạm ngưng hoạt động!"];
   }
 
   let scheduledDate = null;
@@ -40,7 +41,8 @@ module.exports = async (req, res, next) => {
     }
   }
 
-  if (!time_slot || !ALLOWED_SLOTS.includes(String(time_slot).trim())) {
+  const slotDef = getSlotDefinitionByLabel(time_slot);
+  if (!time_slot || !slotDef) {
     errors.time_slot = ["Khung giờ không hợp lệ!"];
   } else if (scheduledDate) {
     const now = new Date();
@@ -50,6 +52,7 @@ module.exports = async (req, res, next) => {
       scheduledDate.getMonth(),
       scheduledDate.getDate()
     );
+
     if (apptDay.getTime() === today.getTime()) {
       if (time_slot === "7:00 - 11:00" && now.getHours() >= 11) {
         errors.time_slot = [

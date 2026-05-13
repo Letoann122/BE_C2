@@ -13,7 +13,11 @@ const {
 const { emitAppointmentUpdated } = require("../../socket");
 const emailQueue = require("../../services/emailQueue");
 const { APPOINTMENT_STATUS } = require("../../constants/appointmentStatus");
-
+const { recalculateSlotCount } = require("../../services/slotCapacityService");
+const {
+  refreshSlotCountersByAppointment,
+  emitSlotAfterCommit,
+} = require("../../services/slotCapacityService");
 const formatDate = (d) => {
   if (!d) return "";
   const date = new Date(d);
@@ -23,7 +27,18 @@ const formatDate = (d) => {
   return `${dd}/${mm}/${yyyy}`;
 };
 
-const formatTime = (d) => (d ? d.toTimeString().slice(0, 5) : null);
+const formatTime = (value) => {
+  if (!value) return null;
+
+  if (typeof value === "string") {
+    return value.slice(0, 5);
+  }
+
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+
+  return d.toTimeString().slice(0, 5);
+};
 
 const inferTimeRange = (date) => {
   if (!date) return "";
@@ -33,20 +48,14 @@ const inferTimeRange = (date) => {
 const pickAssoc = (SourceModel, targetName, foreignKey) => {
   const assocs = SourceModel?.associations || {};
   return Object.values(assocs).find(
-    (a) =>
-      a?.target?.name === targetName &&
-      (!foreignKey || a.foreignKey === foreignKey)
+    (a) => a?.target?.name === targetName && (!foreignKey || a.foreignKey === foreignKey)
   );
 };
 
 const donorAssoc = pickAssoc(Appointment, "User", "donor_id");
 const siteAssoc = pickAssoc(Appointment, "DonationSite", "donation_site_id");
 const slotAssoc = pickAssoc(Appointment, "AppointmentSlot", "appointment_slot_id");
-const approvedDoctorAssoc = pickAssoc(
-  Appointment,
-  "Doctor",
-  "approved_by_doctor_id"
-);
+const approvedDoctorAssoc = pickAssoc(Appointment, "Doctor", "approved_by_doctor_id");
 
 const slotSiteAssoc = pickAssoc(AppointmentSlot, "DonationSite", "donation_site_id");
 const hospitalAssoc = pickAssoc(DonationSite, "Hospital");
@@ -54,8 +63,7 @@ const campaignSiteAssoc = pickAssoc(Campaign, "DonationSite", "donation_site_id"
 
 const getDonor = (appt) => (donorAssoc ? appt[donorAssoc.as] : appt.User);
 const getSlot = (appt) => (slotAssoc ? appt[slotAssoc.as] : appt.AppointmentSlot);
-const getDirectSite = (appt) =>
-  siteAssoc ? appt[siteAssoc.as] : appt.donation_site;
+const getDirectSite = (appt) => (siteAssoc ? appt[siteAssoc.as] : appt.donation_site);
 
 const getSiteFromAppt = (appt) => {
   const slot = getSlot(appt);
@@ -80,9 +88,7 @@ const cleanNotes = (notes) => {
     .map((x) => x.trim())
     .filter(Boolean);
 
-  const filtered = lines.filter(
-    (l) => !/^\[\s*Địa điểm chiến dịch\s*\]/i.test(l)
-  );
+  const filtered = lines.filter((l) => !/^\[\s*Địa điểm chiến dịch\s*\]/i.test(l));
 
   const out = filtered.join("\n").trim();
   return out || null;
@@ -120,9 +126,7 @@ const loadCampaignMap = async (campaignIds) => {
     ? {
       association: campaignSiteAssoc,
       required: false,
-      include: hospitalAssoc
-        ? [{ association: hospitalAssoc, required: false }]
-        : [Hospital],
+      include: hospitalAssoc ? [{ association: hospitalAssoc, required: false }] : [Hospital],
     }
     : {
       model: DonationSite,
@@ -142,9 +146,7 @@ const loadCampaignMap = async (campaignIds) => {
 };
 
 const getCampaignSite = (camp) =>
-  (campaignSiteAssoc && camp?.[campaignSiteAssoc.as]) ||
-  camp?.donation_site ||
-  null;
+  (campaignSiteAssoc && camp?.[campaignSiteAssoc.as]) || camp?.donation_site || null;
 
 module.exports = {
   async index(req, res) {
@@ -222,9 +224,7 @@ module.exports = {
             ? {
               association: siteAssoc,
               required: false,
-              include: hospitalAssoc
-                ? [{ association: hospitalAssoc, required: false }]
-                : [Hospital],
+              include: hospitalAssoc ? [{ association: hospitalAssoc, required: false }] : [Hospital],
             }
             : {
               model: DonationSite,
@@ -396,9 +396,7 @@ module.exports = {
             ? {
               association: siteAssoc,
               required: false,
-              include: hospitalAssoc
-                ? [{ association: hospitalAssoc, required: false }]
-                : [Hospital],
+              include: hospitalAssoc ? [{ association: hospitalAssoc, required: false }] : [Hospital],
             }
             : {
               model: DonationSite,
@@ -438,11 +436,14 @@ module.exports = {
       appointment.approved_at = new Date();
       appointment.rejected_reason = null;
       await appointment.save();
+      await refreshSlotCountersByAppointment(appointment);
+      await emitSlotAfterCommit(appointment.appointment_slot_id || appointment.slot_id);
       emitAppointmentUpdated(appointment.id, {
         status: appointment.status,
         event: "APPOINTMENT_APPROVED",
         message: "Lịch hiến máu của bạn đã được duyệt.",
       });
+
       const isCampaign = !!appointment.campaign_id;
 
       let extra = {};
@@ -565,9 +566,7 @@ module.exports = {
             ? {
               association: siteAssoc,
               required: false,
-              include: hospitalAssoc
-                ? [{ association: hospitalAssoc, required: false }]
-                : [Hospital],
+              include: hospitalAssoc ? [{ association: hospitalAssoc, required: false }] : [Hospital],
             }
             : {
               model: DonationSite,
@@ -602,16 +601,24 @@ module.exports = {
         });
       }
 
+      const slotId = appointment.appointment_slot_id || appointment.slot_id;
+
       appointment.status = APPOINTMENT_STATUS.REJECTED;
       appointment.approved_by_doctor_id = doctor.id;
       appointment.approved_at = new Date();
       appointment.rejected_reason = rejected_reason.trim();
       await appointment.save();
+
+      if (slotId) {
+        await recalculateSlotCount(slotId);
+      }
+
       emitAppointmentUpdated(appointment.id, {
         status: appointment.status,
         event: "APPOINTMENT_REJECTED",
         message: "Lịch hiến máu của bạn đã bị từ chối.",
       });
+
       const isCampaign = !!appointment.campaign_id;
 
       let extra = {};
