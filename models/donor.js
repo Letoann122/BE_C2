@@ -15,6 +15,9 @@ module.exports = (sequelize, DataTypes) => {
       birthday: DataTypes.DATE,
       medical_history: DataTypes.TEXT,
       last_donation_date: DataTypes.DATE,
+      last_known_lat: DataTypes.DECIMAL(10, 7),
+      last_known_lng: DataTypes.DECIMAL(10, 7),
+      last_location_at: DataTypes.DATE,
       donation_count: {
         type: DataTypes.INTEGER,
         defaultValue: 0,

@@ -11,39 +11,53 @@ module.exports = (sequelize, DataTypes) => {
         primaryKey: true,
         autoIncrement: true,
       },
+
       donor_id: {
         type: DataTypes.BIGINT,
         allowNull: false,
       },
+
       donation_site_id: {
         type: DataTypes.BIGINT,
         allowNull: true,
       },
+
       appointment_slot_id: {
         type: DataTypes.BIGINT,
         allowNull: true,
       },
+
       slot_id: {
         type: DataTypes.BIGINT,
         allowNull: true,
       },
+
       campaign_id: {
         type: DataTypes.BIGINT,
         allowNull: true,
       },
+
+      emergency_request_id: {
+        type: DataTypes.BIGINT,
+        allowNull: true,
+      },
+
       appointment_code: {
         type: DataTypes.STRING(50),
         allowNull: true,
         unique: true,
       },
+
       scheduled_at: {
         type: DataTypes.DATE,
         allowNull: false,
       },
+
       preferred_volume_ml: {
         type: DataTypes.INTEGER,
         allowNull: true,
       },
+
       status: {
         type: DataTypes.STRING(20),
         allowNull: false,
@@ -52,54 +66,67 @@ module.exports = (sequelize, DataTypes) => {
           isIn: [Object.values(APPOINTMENT_STATUS)],
         },
       },
+
       notes: {
         type: DataTypes.TEXT,
         allowNull: true,
       },
+
       approved_by_doctor_id: {
         type: DataTypes.BIGINT,
         allowNull: true,
       },
+
       approved_by_admin_id: {
         type: DataTypes.BIGINT,
         allowNull: true,
       },
+
       approved_at: {
         type: DataTypes.DATE,
         allowNull: true,
       },
+
       rejected_reason: {
         type: DataTypes.STRING(255),
         allowNull: true,
       },
+
       checked_in_at: {
         type: DataTypes.DATE,
         allowNull: true,
       },
+
       checked_in_by_doctor_id: {
         type: DataTypes.BIGINT,
         allowNull: true,
       },
+
       screening_started_at: {
         type: DataTypes.DATE,
         allowNull: true,
       },
+
       donation_started_at: {
         type: DataTypes.DATE,
         allowNull: true,
       },
+
       completed_at: {
         type: DataTypes.DATE,
         allowNull: true,
       },
+
       no_show_at: {
         type: DataTypes.DATE,
         allowNull: true,
       },
+
       created_at: {
         type: DataTypes.DATE,
         defaultValue: sequelize.literal("CURRENT_TIMESTAMP"),
       },
+
       updated_at: {
         type: DataTypes.DATE,
         defaultValue: sequelize.literal("CURRENT_TIMESTAMP"),
@@ -135,6 +162,11 @@ module.exports = (sequelize, DataTypes) => {
     Appointment.belongsTo(models.Campaign, {
       foreignKey: "campaign_id",
       as: "campaign",
+    });
+
+    Appointment.belongsTo(models.EmergencyRequest, {
+      foreignKey: "emergency_request_id",
+      as: "emergency_request",
     });
 
     Appointment.belongsTo(models.Doctor, {
