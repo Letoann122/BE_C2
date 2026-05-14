@@ -20,7 +20,7 @@ const SlotAnalyticsController = require("../controllers/admin/SlotAnalyticsContr
 // ===== COMMON =====
 const NewsController = require("../controllers/NewsController");
 const CampaignController = require("../controllers/donor/CampaignController");
-
+const EmergencyResponseController = require("../controllers/donor/EmergencyResponseController");
 // ===== DONOR =====
 const LoadProfileController = require("../controllers/donor/LoadProfileController");
 const DonationSitesController = require("../controllers/donor/DonationSitesController");
@@ -46,7 +46,7 @@ const CheckinController = require("../controllers/doctor/CheckinController");
 const DonationProcessController = require("../controllers/doctor/DonationProcessController");
 const SlotTemplateController = require("../controllers/SlotTemplateController");
 const LeaderboardController = require("../controllers/doctor/LeaderboardController");
-
+const EmergencyRequestController = require("../controllers/doctor/EmergencyRequestController");
 // ===== ADMIN =====
 const AdminController = require("../controllers/admin/AdminController");
 const AdminDonorController = require("../controllers/admin/AdminDonorController");
@@ -109,8 +109,19 @@ donorRouter.get("/donation-history", DonationHistoryController.index);
 donorRouter.get("/nearby-donations", NearbyDonationController.index);
 donorRouter.get("/appointment-process/detail", DonationProcessController.detail);
 
+donorRouter.put(
+  "/location",
+  verifyToken("donor"),
+  ProfileController.updateLocation
+);
+
 donorRouter.get("/achievements/profile", AchievementController.profile);
 donorRouter.post("/achievements/sync", AchievementController.sync);
+
+donorRouter.get("/emergency-responses/pending", EmergencyResponseController.pending);
+donorRouter.post("/emergency-responses/accept", EmergencyResponseController.accept);
+donorRouter.post("/emergency-responses/decline", EmergencyResponseController.decline);
+
 
 router.use("/donor", verifyToken("donor"), donorRouter);
 
@@ -138,6 +149,22 @@ doctorRouter.post("/slot-templates/generate", SlotTemplateController.generate);
 doctorRouter.get("/donation-appointments", DonationAppointmentController.index);
 doctorRouter.post("/donation-appointments/approve", DonationAppointmentController.approve);
 doctorRouter.post("/donation-appointments/reject", DonationAppointmentController.reject);
+doctorRouter.get(
+  "/emergency-requests/:id/stats",
+  EmergencyRequestController.stats
+);
+
+doctorRouter.get("/emergency-requests", EmergencyRequestController.index);
+doctorRouter.post("/emergency-requests", EmergencyRequestController.store);
+doctorRouter.get("/emergency-requests/:id", EmergencyRequestController.show);
+doctorRouter.get(
+  "/emergency-requests/:id/recommendations",
+  EmergencyRequestController.recommendations
+);
+doctorRouter.post(
+  "/emergency-requests/:id/recommendations/save",
+  EmergencyRequestController.saveRecommendations
+);
 
 doctorRouter.get("/blood-inventory", BloodInventoryController.getAll);
 doctorRouter.post("/blood-inventory", BloodInventoryController.create);
@@ -151,7 +178,7 @@ doctorRouter.put("/blood-inventory/:id", BloodInventoryController.update);
 doctorRouter.delete("/blood-inventory/:id", BloodInventoryController.delete);
 
 doctorRouter.get("/donation-appointments/approved", DonationController.index);
-doctorRouter.post("/donations/complete", DonationController.completeDonation);
+// doctorRouter.post("/donations/complete", DonationController.completeDonation);
 doctorRouter.get("/reports/campaign-performance", ReportController.campaignPerformance);
 
 doctorRouter.get("/news", NewsDoctorController.getMyNews);
@@ -170,6 +197,10 @@ doctorRouter.put("/campaigns/:id", CampaignsController.updateCampaign);
 doctorRouter.patch("/campaigns/:id/close", CampaignsController.closeCampaign);
 doctorRouter.get("/campaigns/:id/appointments", CampaignsController.getCampaignAppointments);
 doctorRouter.post("/campaigns/:campaign_id/generate-slots", AppointmentSlotController.generateCampaign);
+doctorRouter.post(
+  "/emergency-requests/:id/send",
+  EmergencyRequestController.sendToRecommendedDonors
+);
 
 doctorRouter.get("/support/notifications", SendNotificationController.listNotifications);
 doctorRouter.post("/support/notifications", SendNotificationController.sendNotification);

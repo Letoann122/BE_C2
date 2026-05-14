@@ -1,4 +1,4 @@
-const { User } = require("./../models");
+const { User, Donor } = require("./../models");
 
 module.exports = {
   // Lấy thông tin hồ sơ người dùng
@@ -107,4 +107,65 @@ module.exports = {
       });
     }
   },
+
+  // Cập nhật vị trí GPS donor
+async updateLocation(req, res) {
+  try {
+    const userId = req.user.userId;
+
+    const { latitude, longitude } = req.body;
+
+    if (
+      latitude === undefined ||
+      longitude === undefined
+    ) {
+      return res.status(400).json({
+        status: false,
+        message: "Thiếu tọa độ vị trí!",
+      });
+    }
+
+    const lat = Number(latitude);
+    const lng = Number(longitude);
+
+    if (
+      !Number.isFinite(lat) ||
+      !Number.isFinite(lng)
+    ) {
+      return res.status(400).json({
+        status: false,
+        message: "Tọa độ không hợp lệ!",
+      });
+    }
+
+    await Donor.update(
+      {
+        last_known_lat: lat,
+        last_known_lng: lng,
+        last_location_at: new Date(),
+      },
+      {
+        where: {
+          user_id: userId,
+        },
+      }
+    );
+
+    return res.json({
+      status: true,
+      message: "Cập nhật vị trí thành công!",
+    });
+  } catch (error) {
+    console.error(
+      "ProfileController.updateLocation error:",
+      error
+    );
+
+    return res.status(500).json({
+      status: false,
+      message: "Không thể cập nhật vị trí!",
+      error: error.message,
+    });
+  }
+},
 };

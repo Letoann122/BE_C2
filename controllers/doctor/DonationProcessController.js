@@ -12,6 +12,7 @@ const {
   InventoryTransaction,
   Campaign,
   AppointmentSlot,
+  EmergencyRequest,
   sequelize,
 } = require("../../models");
 
@@ -363,9 +364,8 @@ module.exports = {
         });
       }
 
-      const note = `[Sàng lọc không đạt] ${
-        reason || screening_note || "Không có ghi chú"
-      }`;
+      const note = `[Sàng lọc không đạt] ${reason || screening_note || "Không có ghi chú"
+        }`;
 
       appointment.status = "FAILED_SCREENING";
       appointment.notes = appendNote(appointment.notes, note);
@@ -627,6 +627,7 @@ module.exports = {
         {
           donor_user_id: appointment.donor_id,
           appointment_id: appointment.id,
+          emergency_request_id: appointment.emergency_request_id || null,
           hospital_id: hospitalId,
           blood_type_id: bloodType.id,
           volume_ml: Number(volume_ml),
@@ -689,6 +690,39 @@ module.exports = {
       await refreshSlotCountersByAppointment(appointment, t);
 
       await syncDonorAchievements(appointment.donor_id, t);
+
+      if (appointment.emergency_request_id) {
+        const emergencyRequest = await EmergencyRequest.findByPk(
+          appointment.emergency_request_id,
+          {
+            transaction: t,
+            lock: t.LOCK.UPDATE,
+          }
+        );
+
+        if (emergencyRequest) {
+          const currentFulfilled = Number(
+            emergencyRequest.fulfilled_volume_ml || 0
+          );
+
+          const newFulfilled =
+            currentFulfilled +
+            Number(volume_ml || appointment.preferred_volume_ml || 0);
+
+          emergencyRequest.fulfilled_volume_ml = newFulfilled;
+
+          if (
+            emergencyRequest.status === "open" &&
+            newFulfilled >= Number(emergencyRequest.required_volume_ml || 0)
+          ) {
+            emergencyRequest.status = "fulfilled";
+          }
+
+          emergencyRequest.updated_at = new Date();
+
+          await emergencyRequest.save({ transaction: t });
+        }
+      }
 
       await t.commit();
 

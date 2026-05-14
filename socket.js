@@ -16,6 +16,34 @@ function initSocket(server) {
   io.on("connection", (socket) => {
     console.log("🟢 Socket connected:", socket.id);
 
+    socket.on("join_user", (userId) => {
+      if (!userId) return;
+
+      socket.join(`user_${userId}`);
+      console.log(`👤 ${socket.id} joined user_${userId}`);
+    });
+
+    socket.on("leave_user", (userId) => {
+      if (!userId) return;
+
+      socket.leave(`user_${userId}`);
+      console.log(`👤 ${socket.id} left user_${userId}`);
+    });
+
+    socket.on("join_donor", (donorId) => {
+      if (!donorId) return;
+
+      socket.join(`user_${donorId}`);
+      console.log(`🩸 ${socket.id} joined donor/user_${donorId}`);
+    });
+
+    socket.on("leave_donor", (donorId) => {
+      if (!donorId) return;
+
+      socket.leave(`user_${donorId}`);
+      console.log(`🩸 ${socket.id} left donor/user_${donorId}`);
+    });
+
     socket.on("join_appointment", (appointmentId) => {
       if (!appointmentId) return;
 
@@ -83,9 +111,43 @@ function emitEmergencyAlertUpdated(payload = {}) {
   io.emit("emergency_alert_updated", payload);
 }
 
+function emitToUser(userId, eventName, payload = {}) {
+  if (!io || !userId || !eventName) return;
+
+  io.to(`user_${userId}`).emit(eventName, payload);
+}
+
+function emitEmergencyRequestToDonor(donorId, payload = {}) {
+  if (!io || !donorId) return;
+
+  io.to(`user_${donorId}`).emit("emergency_request_received", {
+    donor_id: donorId,
+    ...payload,
+  });
+}
+
+function emitEmergencyRequestPing(payload = {}) {
+  if (!io) return;
+
+  io.emit("emergency_request_ping", payload);
+}
+
+function emitEmergencyRequestStatsUpdated(emergencyRequestId, payload = {}) {
+  if (!io || !emergencyRequestId) return;
+
+  io.emit("emergency_request_stats_updated", {
+    emergency_request_id: emergencyRequestId,
+    ...payload,
+  });
+}
+
 module.exports = {
   initSocket,
   emitAppointmentUpdated,
   emitSlotUpdated,
   emitEmergencyAlertUpdated,
+  emitToUser,
+  emitEmergencyRequestToDonor,
+  emitEmergencyRequestStatsUpdated,
+  emitEmergencyRequestPing,
 };
