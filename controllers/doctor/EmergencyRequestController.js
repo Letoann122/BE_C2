@@ -13,6 +13,8 @@ const {
   getEmergencyRecommendations,
 } = require("../../services/aiRecommendationService");
 
+const UserNotificationService = require("../../services/UserNotificationService");
+
 const {
   emitEmergencyAlertUpdated,
   emitEmergencyRequestToDonor,
@@ -424,6 +426,16 @@ module.exports = {
         });
       }
 
+      const now = new Date();
+
+      if (request.needed_before && new Date(request.needed_before) < now) {
+        await t.rollback();
+        return res.status(400).json({
+          status: false,
+          message: "Yêu cầu khẩn cấp này đã hết hạn!",
+        });
+      }
+
       let responses = await EmergencyRequestResponse.findAll({
         where: {
           emergency_request_id: id,
@@ -444,8 +456,6 @@ module.exports = {
             "Chưa có danh sách donor đề xuất. Vui lòng bấm lưu danh sách đề xuất trước!",
         });
       }
-
-      const now = new Date();
 
       await EmergencyRequestResponse.update(
         {
@@ -487,11 +497,11 @@ module.exports = {
         title: request.title,
         message: request.message,
         status: request.status,
-        donation_site: request.DonationSite || null,
+        donation_site: request.DonationSite || request.donation_site || null,
         donation_site_id: request.donation_site_id,
       };
 
-      responses.forEach((response) => {
+      for (const response of responses) {
         emitEmergencyRequestToDonor(response.donor_id, {
           response_id: response.id,
           ai_score: response.ai_score,
@@ -499,13 +509,27 @@ module.exports = {
           reason_summary: response.reason_summary,
           request: requestPayload,
         });
-      });
+
+        await UserNotificationService.create({
+          user_id: response.donor_id,
+          type: "emergency",
+          title: "Yêu cầu hiến máu khẩn cấp",
+          message: `Bạn được đề xuất hỗ trợ yêu cầu hiến máu khẩn cấp nhóm máu ${request.blood_group}.`,
+          priority: "urgent",
+          action_url: "/notification",
+          meta_json: {
+            emergency_request_id: request.id,
+            response_id: response.id,
+          },
+        });
+      }
+
       emitEmergencyRequestPing({
-  emergency_request_id: request.id,
-  blood_group: request.blood_group,
-  title: request.title,
-  sent_at: new Date(),
-});
+        emergency_request_id: request.id,
+        blood_group: request.blood_group,
+        title: request.title,
+        sent_at: new Date(),
+      });
 
       emitEmergencyAlertUpdated({
         event: "EMERGENCY_REQUEST_SENT",

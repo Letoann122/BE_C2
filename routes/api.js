@@ -30,6 +30,7 @@ const ChangePasswordController = require("../controllers/ChangePassController");
 const DonorController = require("../controllers/donor/DonorController");
 const NearbyDonationController = require("../controllers/donor/NearbyDonationController");
 const AchievementController = require("../controllers/donor/AchievementController");
+const UserNotificationController = require("../controllers/donor/UserNotificationController");
 
 // ===== DOCTOR =====
 const DoctorController = require("../controllers/doctor/DoctorController");
@@ -109,11 +110,7 @@ donorRouter.get("/donation-history", DonationHistoryController.index);
 donorRouter.get("/nearby-donations", NearbyDonationController.index);
 donorRouter.get("/appointment-process/detail", DonationProcessController.detail);
 
-donorRouter.put(
-  "/location",
-  verifyToken("donor"),
-  ProfileController.updateLocation
-);
+donorRouter.put("/location",verifyToken("donor"), ProfileController.updateLocation);
 
 donorRouter.get("/achievements/profile", AchievementController.profile);
 donorRouter.post("/achievements/sync", AchievementController.sync);
@@ -121,6 +118,12 @@ donorRouter.post("/achievements/sync", AchievementController.sync);
 donorRouter.get("/emergency-responses/pending", EmergencyResponseController.pending);
 donorRouter.post("/emergency-responses/accept", EmergencyResponseController.accept);
 donorRouter.post("/emergency-responses/decline", EmergencyResponseController.decline);
+
+donorRouter.get("/notifications", UserNotificationController.index);
+donorRouter.get("/notifications/unread-count", UserNotificationController.unreadCount);
+donorRouter.patch("/notifications/:id/read", UserNotificationController.markAsRead);
+donorRouter.patch("/notifications/read-all", UserNotificationController.markAllAsRead);
+donorRouter.delete("/notifications/clear-all", UserNotificationController.clearAll);
 
 
 router.use("/donor", verifyToken("donor"), donorRouter);

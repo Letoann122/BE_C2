@@ -7,7 +7,7 @@ const {
   APPOINTMENT_STATUS,
   QR_ALLOWED_STATUSES,
 } = require("../../constants/appointmentStatus");
-
+const UserNotificationService = require("../../services/UserNotificationService");
 const {
   refreshSlotCountersByAppointment,
   emitSlotAfterCommit,
@@ -25,7 +25,7 @@ function parseQrPayload(raw) {
     if (json && typeof json === "object") {
       return json;
     }
-  } catch (_) {}
+  } catch (_) { }
 
   try {
     const url = new URL(text);
@@ -36,7 +36,7 @@ function parseQrPayload(raw) {
         url.searchParams.get("code") ||
         url.searchParams.get("qr_code"),
     };
-  } catch (_) {}
+  } catch (_) { }
 
   return {
     appointment_code: text,
@@ -212,6 +212,21 @@ module.exports = {
       appointment.checked_in_by_doctor_id = doctor.id;
 
       await appointment.save();
+      try {
+  await UserNotificationService.create({
+    user_id: appointment.donor_id,
+    type: "appointment",
+    title: "Check-in thành công",
+    message: "Bạn đã check-in thành công cho lịch hiến máu.",
+    priority: "normal",
+    action_url: "/my-appointments",
+    meta_json: {
+      appointment_id: appointment.id,
+    },
+  });
+} catch (notiError) {
+  console.error("CREATE CHECKIN NOTIFICATION ERROR:", notiError);
+}
 
       emitAppointmentUpdated(appointment.id, {
         status: appointment.status,
@@ -329,8 +344,8 @@ module.exports = {
             hour === null
               ? "Không xác định"
               : hour < 12
-              ? "Ca sáng"
-              : "Ca chiều",
+                ? "Ca sáng"
+                : "Ca chiều",
         };
       });
 
