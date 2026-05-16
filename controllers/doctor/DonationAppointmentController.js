@@ -18,6 +18,8 @@ const {
   refreshSlotCountersByAppointment,
   emitSlotAfterCommit,
 } = require("../../services/slotCapacityService");
+const UserNotificationService = require("../../services/UserNotificationService");
+
 const formatDate = (d) => {
   if (!d) return "";
   const date = new Date(d);
@@ -443,7 +445,17 @@ module.exports = {
         event: "APPOINTMENT_APPROVED",
         message: "Lịch hiến máu của bạn đã được duyệt.",
       });
-
+      await UserNotificationService.create({
+        user_id: appointment.donor_id,
+        type: "appointment",
+        title: "Lịch hẹn đã được duyệt",
+        message: `Lịch hẹn ${appointment.appointment_code || ""} đã được bác sĩ duyệt.`,
+        priority: "important",
+        action_url: "/my-appointments",
+        meta_json: {
+          appointment_id: appointment.id,
+        },
+      });
       const isCampaign = !!appointment.campaign_id;
 
       let extra = {};
@@ -608,7 +620,17 @@ module.exports = {
       appointment.approved_at = new Date();
       appointment.rejected_reason = rejected_reason.trim();
       await appointment.save();
-
+      await UserNotificationService.create({
+        user_id: appointment.donor_id,
+        type: "appointment",
+        title: "Lịch hẹn bị từ chối",
+        message: `Lịch hẹn ${appointment.appointment_code || ""} đã bị từ chối. Lý do: ${rejected_reason.trim()}`,
+        priority: "normal",
+        action_url: "/my-appointments",
+        meta_json: {
+          appointment_id: appointment.id,
+        },
+      });
       if (slotId) {
         await recalculateSlotCount(slotId);
       }

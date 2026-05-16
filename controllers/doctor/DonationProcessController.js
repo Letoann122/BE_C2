@@ -19,11 +19,14 @@ const {
 const {
   syncDonorAchievements,
 } = require("../../services/achievementService");
+
 const {
   buildSlotPayload,
   refreshSlotCountersByAppointment,
   emitSlotAfterCommit,
 } = require("../../services/slotCapacityService");
+
+const UserNotificationService = require("../../services/UserNotificationService");
 
 function parseBloodGroup(group) {
   if (!group) return null;
@@ -364,8 +367,9 @@ module.exports = {
         });
       }
 
-      const note = `[Sàng lọc không đạt] ${reason || screening_note || "Không có ghi chú"
-        }`;
+      const note = `[Sàng lọc không đạt] ${
+        reason || screening_note || "Không có ghi chú"
+      }`;
 
       appointment.status = "FAILED_SCREENING";
       appointment.notes = appendNote(appointment.notes, note);
@@ -375,6 +379,19 @@ module.exports = {
       const slotId = appointment.appointment_slot_id || appointment.slot_id;
 
       await refreshSlotCountersByAppointment(appointment, t);
+
+      await UserNotificationService.create({
+        user_id: appointment.donor_id,
+        type: "appointment",
+        title: "Không đạt sàng lọc",
+        message: "Bạn chưa đủ điều kiện hiến máu trong lần sàng lọc này.",
+        priority: "normal",
+        action_url: "/my-appointments",
+        meta_json: {
+          appointment_id: appointment.id,
+        },
+        transaction: t,
+      });
 
       await t.commit();
 
@@ -480,6 +497,20 @@ module.exports = {
       appointment.notes = appendNote(appointment.notes, note);
 
       await appointment.save({ transaction: t });
+
+      await UserNotificationService.create({
+        user_id: appointment.donor_id,
+        type: "appointment",
+        title: "Bắt đầu hiến máu",
+        message: "Bạn đã đủ điều kiện và bắt đầu quá trình hiến máu.",
+        priority: "normal",
+        action_url: "/my-appointments",
+        meta_json: {
+          appointment_id: appointment.id,
+        },
+        transaction: t,
+      });
+
       await t.commit();
 
       emitAppointmentUpdated(appointment.id, {
@@ -690,6 +721,57 @@ module.exports = {
       await refreshSlotCountersByAppointment(appointment, t);
 
       await syncDonorAchievements(appointment.donor_id, t);
+
+      await UserNotificationService.create({
+        user_id: appointment.donor_id,
+        type: "achievement",
+        title: "Hiến máu thành công",
+        message:
+          "Cảm ơn bạn đã hiến máu. Hành động của bạn có thể cứu sống nhiều người.",
+        priority: "important",
+        action_url: "/blood-donation-history",
+        meta_json: {
+          appointment_id: appointment.id,
+          donation_id: donation.id,
+        },
+        transaction: t,
+      });
+
+      const donorUser = await User.findByPk(appointment.donor_id, {
+        transaction: t,
+      });
+
+      const donationCount = Number(donorUser?.donation_count || 0);
+
+      let badgeTitle = null;
+
+      if (donationCount === 1) {
+        badgeTitle = "Người hiến máu mới";
+      } else if (donationCount === 5) {
+        badgeTitle = "Donor Đồng";
+      } else if (donationCount === 10) {
+        badgeTitle = "Donor Bạc";
+      } else if (donationCount === 20) {
+        badgeTitle = "Donor Vàng";
+      }
+
+      if (badgeTitle) {
+        await UserNotificationService.create({
+          user_id: appointment.donor_id,
+          type: "achievement",
+          title: "Bạn vừa nhận huy hiệu mới!",
+          message: `Chúc mừng! Bạn đã đạt danh hiệu "${badgeTitle}".`,
+          priority: "important",
+          action_url: "/blood-donation-history",
+          meta_json: {
+            badge: badgeTitle,
+            donation_count: donationCount,
+            appointment_id: appointment.id,
+            donation_id: donation.id,
+          },
+          transaction: t,
+        });
+      }
 
       if (appointment.emergency_request_id) {
         const emergencyRequest = await EmergencyRequest.findByPk(

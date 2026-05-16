@@ -1,6 +1,7 @@
 "use strict";
 
 const { Op } = require("sequelize");
+
 const {
   sequelize,
   Campaign,
@@ -8,9 +9,15 @@ const {
   Appointment,
   AppointmentSlot,
 } = require("../../models");
+
+const {
+  getDisplayCampaignStatus,
+} = require("../../utils/campaignStatusHelper");
+
 const {
   generateAppointmentCode,
 } = require("../../utils/generateAppointmentCode");
+
 const {
   APPOINTMENT_STATUS,
   ACTIVE_APPOINTMENT_STATUSES,
@@ -24,22 +31,13 @@ const {
 
 const { emitAppointmentUpdated } = require("../../socket");
 
-const todayStr = () => new Date().toISOString().slice(0, 10);
-
-const computeCampaignStatus = (start_date, end_date) => {
-  const t = todayStr();
-  const s = String(start_date).slice(0, 10);
-  const e = String(end_date).slice(0, 10);
-
-  if (t < s) return "upcoming";
-  if (t > e) return "ended";
-  return "running";
-};
-
 const buildLocationDisplay = (raw) => {
   if (raw.locate_type === "donation_site") {
     const ds = raw.donation_site;
-    if (ds) return [ds.name, ds.address].filter(Boolean).join(" – ");
+
+    if (ds) {
+      return [ds.name, ds.address].filter(Boolean).join(" – ");
+    }
   }
 
   return raw.location || "";
@@ -57,27 +55,45 @@ const normalizePreferredVolume = (v) => {
   return null;
 };
 
+const dateKey = (value) => {
+  if (!value) return "";
 
+  if (typeof value === "string") {
+    return value.slice(0, 10);
+  }
+
+  const d = new Date(value);
+
+  if (Number.isNaN(d.getTime())) return "";
+
+  return d.toISOString().slice(0, 10);
+};
+
+const buildVNDateTime = (dateKeyValue, timeValue) => {
+  if (!dateKeyValue || !timeValue) return null;
+
+  const time = String(timeValue).slice(0, 8);
+
+  return new Date(`${dateKeyValue}T${time}+07:00`);
+};
 
 module.exports = {
   async publicCampaigns(req, res) {
     try {
       const { status = "active" } = req.query;
-      const t = todayStr();
 
       const where = {
         approval_status: "approved",
       };
 
+      if (status && status !== "active" && status !== "all") {
+        where.status = status;
+      }
+
       if (status === "active") {
-        where.end_date = { [Op.gte]: t };
-      } else if (status === "upcoming") {
-        where.start_date = { [Op.gt]: t };
-      } else if (status === "running") {
-        where.start_date = { [Op.lte]: t };
-        where.end_date = { [Op.gte]: t };
-      } else if (status === "ended") {
-        where.end_date = { [Op.lt]: t };
+        where.status = {
+          [Op.in]: ["upcoming", "running"],
+        };
       }
 
       const campaigns = await Campaign.findAll({
@@ -89,7 +105,10 @@ module.exports = {
             required: false,
           },
         ],
-        order: [["start_date", "ASC"]],
+        order: [
+          ["status", "ASC"],
+          ["start_date", "ASC"],
+        ],
       });
 
       const data = campaigns.map((c) => {
@@ -101,12 +120,14 @@ module.exports = {
           content: raw.content,
           start_date: raw.start_date,
           end_date: raw.end_date,
-          is_emerge: raw.is_emerge,
           is_emergency: raw.is_emergency,
           locate_type: raw.locate_type,
           donation_site_id: raw.donation_site_id,
           location: raw.location,
-          status: computeCampaignStatus(raw.start_date, raw.end_date),
+
+          // QUAN TRỌNG: donor dùng status từ DB để sync admin/doctor
+          status: getDisplayCampaignStatus(raw),
+
           location_display: buildLocationDisplay(raw),
         };
       });
@@ -127,6 +148,7 @@ module.exports = {
 
   async publicCampaignDetail(req, res) {
     try {
+      
       const { id } = req.params;
 
       const campaign = await Campaign.findOne({
@@ -156,7 +178,10 @@ module.exports = {
         status: true,
         data: {
           ...raw,
-          status: computeCampaignStatus(raw.start_date, raw.end_date),
+
+          // QUAN TRỌNG: donor dùng status từ DB để sync admin/doctor
+          status: getDisplayCampaignStatus(raw),
+
           location_display: buildLocationDisplay(raw),
         },
       });
@@ -174,6 +199,7 @@ module.exports = {
     const t = await sequelize.transaction();
 
     try {
+      
       const donor_id = req.user?.userId || req.user?.id;
 
       const {
@@ -230,10 +256,8 @@ module.exports = {
         });
       }
 
-      const camp = campaign.toJSON();
-      const campaignStatus = computeCampaignStatus(camp.start_date, camp.end_date);
-
-      if (campaignStatus === "ended") {
+      // QUAN TRỌNG: không tự tính ngày nữa, dùng status DB để sync admin/doctor
+      if (getDisplayCampaignStatus(campaign) === "ended") {
         await t.rollback();
 
         return res.json({
@@ -245,7 +269,7 @@ module.exports = {
       const slot = await AppointmentSlot.findOne({
         where: {
           id: selectedSlotId,
-          campaign_id: camp.id,
+          campaign_id: campaign.id,
           type: "campaign",
         },
         transaction: t,
@@ -261,9 +285,9 @@ module.exports = {
         });
       }
 
-      const slotDate = String(slot.slot_date).slice(0, 10);
-      const campaignStart = String(camp.start_date).slice(0, 10);
-      const campaignEnd = String(camp.end_date).slice(0, 10);
+      const slotDate = dateKey(slot.slot_date);
+      const campaignStart = dateKey(campaign.start_date);
+      const campaignEnd = dateKey(campaign.end_date);
 
       if (slotDate < campaignStart || slotDate > campaignEnd) {
         await t.rollback();
@@ -274,14 +298,25 @@ module.exports = {
         });
       }
 
-      const scheduledDate = new Date(`${slotDate}T${slot.start_time}`);
+      const scheduledDate = buildVNDateTime(slotDate, slot.start_time);
+      const slotEndAt = buildVNDateTime(slotDate, slot.end_time);
 
-      if (scheduledDate < new Date()) {
+      if (!scheduledDate || !slotEndAt) {
         await t.rollback();
 
         return res.json({
           status: false,
-          message: "Khung giờ bạn chọn đã trôi qua. Vui lòng chọn thời gian khác!",
+          message: "Thời gian slot không hợp lệ!",
+        });
+      }
+
+      if (Date.now() > slotEndAt.getTime()) {
+        await t.rollback();
+
+        return res.json({
+          status: false,
+          message:
+            "Khung giờ bạn chọn đã kết thúc. Vui lòng chọn thời gian khác!",
         });
       }
 
@@ -312,13 +347,8 @@ module.exports = {
         }
       }
 
-      const sameDay = new Date(
-        scheduledDate.getFullYear(),
-        scheduledDate.getMonth(),
-        scheduledDate.getDate()
-      );
-
-      const nextDay = new Date(sameDay);
+      const sameDay = new Date(`${slotDate}T00:00:00+07:00`);
+      const nextDay = new Date(`${slotDate}T00:00:00+07:00`);
       nextDay.setDate(nextDay.getDate() + 1);
 
       const existed = await Appointment.findOne({
@@ -349,8 +379,9 @@ module.exports = {
 
       let donation_site_id = null;
 
-      if (camp.locate_type === "donation_site") {
-        donation_site_id = camp.donation_site_id || slot.donation_site_id || null;
+      if (campaign.locate_type === "donation_site") {
+        donation_site_id =
+          campaign.donation_site_id || slot.donation_site_id || null;
 
         if (!donation_site_id) {
           await t.rollback();
@@ -365,20 +396,21 @@ module.exports = {
       }
 
       const extraLoc =
-        camp.locate_type === "custom" && camp.location
-          ? `[Địa điểm chiến dịch] ${camp.location}`
+        campaign.locate_type === "custom" && campaign.location
+          ? `[Địa điểm chiến dịch] ${campaign.location}`
           : null;
 
       const notesFinal = [notes?.trim(), extraLoc].filter(Boolean).join("\n");
 
       const appointment_code = generateAppointmentCode("CD");
+
       const created = await createAppointmentWithSlotCapacity({
         slotId: selectedSlotId,
         appointmentPayload: {
           appointment_code,
           donor_id,
           donation_site_id,
-          campaign_id: camp.id,
+          campaign_id: campaign.id,
           preferred_volume_ml: normalizePreferredVolume(preferred_volume_ml),
           notes: notesFinal || null,
           status: APPOINTMENT_STATUS.REQUESTED,

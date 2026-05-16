@@ -126,6 +126,12 @@ function emitEmergencyRequestToDonor(donorId, payload = {}) {
   });
 }
 
+function emitUserNotification(userId, payload = {}) {
+  if (!io || !userId) return;
+
+  io.to(`user_${userId}`).emit("new_user_notification", payload);
+}
+
 function emitEmergencyRequestPing(payload = {}) {
   if (!io) return;
 
@@ -150,4 +156,5 @@ module.exports = {
   emitEmergencyRequestToDonor,
   emitEmergencyRequestStatsUpdated,
   emitEmergencyRequestPing,
+  emitUserNotification,
 };
