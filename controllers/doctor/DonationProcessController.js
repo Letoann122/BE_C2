@@ -367,9 +367,8 @@ module.exports = {
         });
       }
 
-      const note = `[Sàng lọc không đạt] ${
-        reason || screening_note || "Không có ghi chú"
-      }`;
+      const note = `[Sàng lọc không đạt] ${reason || screening_note || "Không có ghi chú"
+        }`;
 
       appointment.status = "FAILED_SCREENING";
       appointment.notes = appendNote(appointment.notes, note);
@@ -636,7 +635,27 @@ module.exports = {
           message: "Nhóm máu không hợp lệ hoặc chưa có nhóm máu!",
         });
       }
+      const oldBloodGroup = appointment.donor?.blood_group || null;
 
+      if (oldBloodGroup !== parsedBloodGroup.label) {
+        await User.update(
+          {
+            blood_group: parsedBloodGroup.label,
+          },
+          {
+            where: {
+              id: appointment.donor_id,
+            },
+            transaction: t,
+          }
+        );
+
+        appointment.notes = appendNote(
+          appointment.notes,
+          `[Cập nhật nhóm máu] ${oldBloodGroup || "Chưa có"} -> ${parsedBloodGroup.label
+          }`
+        );
+      }
       const [bloodType] = await BloodType.findOrCreate({
         where: {
           abo: parsedBloodGroup.abo,
