@@ -21,6 +21,8 @@ const SlotAnalyticsController = require("../controllers/admin/SlotAnalyticsContr
 const NewsController = require("../controllers/NewsController");
 const CampaignController = require("../controllers/donor/CampaignController");
 const EmergencyResponseController = require("../controllers/donor/EmergencyResponseController");
+const ChatbotController = require("../controllers/common/ChatbotController");
+const optionalAuth = require("../middlewares/optionalAuth");
 // ===== DONOR =====
 const LoadProfileController = require("../controllers/donor/LoadProfileController");
 const DonationSitesController = require("../controllers/donor/DonationSitesController");
@@ -85,7 +87,7 @@ router.get("/public/campaigns", CampaignController.publicCampaigns);
 router.get("/public/campaigns/:id", CampaignController.publicCampaignDetail);
 router.get("/public/emergency-alert", EmergencyAlertController.getEmergencyAlert);
 router.get("/support/emergency-active", SendNotificationController.activeEmergency);
-
+router.post("/chatbot/message", optionalAuth, ChatbotController.ask);
 // ==================== DONOR ROUTES ====================
 const donorRouter = express.Router();
 
