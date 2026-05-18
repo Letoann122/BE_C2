@@ -99,33 +99,120 @@ module.exports = {
   },
 
   // GET ONE
-  async getOne(req, res) {
-    try {
-      const { id } = req.params;
+  // GET ONE
+async getOne(req, res) {
+  try {
+    const { id } = req.params;
 
-      const batch = await BloodInventory.findByPk(id, {
-        include: [
-          { model: BloodType, as: "blood_type", attributes: ["abo", "rh"] },
-        ],
-      });
-
-      if (!batch) {
-        return res.json({ status: false, message: "Không tìm thấy lô máu" });
+    const [rows] = await sequelize.query(
+      `
+        SELECT
+          bi.*,
+          CONCAT(bt.abo, bt.rh) AS blood_group,
+          h.name AS hospital_name,
+          COALESCE(tested_user.full_name, tested_user.email) AS tested_by_name,
+          COALESCE(donor_user.full_name, donor_user.email) AS donor_name
+        FROM blood_inventory bi
+        LEFT JOIN blood_types bt
+          ON bt.id = bi.blood_type_id
+        LEFT JOIN hospitals h
+          ON h.id = bi.hospital_id
+        LEFT JOIN doctors tested_doctor
+          ON tested_doctor.id = bi.tested_by_doctor_id
+        LEFT JOIN users tested_user
+          ON tested_user.id = tested_doctor.user_id
+        LEFT JOIN donations d
+          ON d.id = bi.donation_id
+        LEFT JOIN users donor_user
+          ON donor_user.id = d.donor_user_id
+        WHERE bi.id = :id
+        LIMIT 1
+      `,
+      {
+        replacements: { id },
       }
+    );
 
+    const batch = rows?.[0];
+
+    if (!batch) {
       return res.json({
-        status: true,
-        message: "Lấy chi tiết lô máu thành công",
-        data: batch,
-      });
-    } catch (error) {
-      return res.status(500).json({
         status: false,
-        message: "Lỗi lấy chi tiết lô máu",
-        error: error.message,
+        message: "Không tìm thấy lô máu",
       });
     }
-  },
+
+    const transactions = await InventoryTransaction.findAll({
+      where: {
+        inventory_id: id,
+      },
+      include: [
+        {
+          model: User,
+          attributes: ["id", "full_name", "email", "role"],
+          required: false,
+        },
+      ],
+      order: [["occurred_at", "DESC"]],
+    });
+
+    const mappedTransactions = transactions.map((tx) => ({
+      id: tx.id,
+      inventory_id: tx.inventory_id,
+      tx_type: tx.tx_type,
+      units: tx.units,
+      reason: tx.reason,
+      ref_donation_id: tx.ref_donation_id,
+      occurred_at: tx.occurred_at,
+      user: tx.User
+        ? {
+            id: tx.User.id,
+            full_name: tx.User.full_name,
+            email: tx.User.email,
+            role: tx.User.role,
+          }
+        : null,
+      by: tx.User
+        ? {
+            id: tx.User.id,
+            full_name: tx.User.full_name,
+            email: tx.User.email,
+            role: tx.User.role,
+          }
+        : null,
+    }));
+
+    return res.json({
+      status: true,
+      message: "Lấy chi tiết lô máu thành công",
+      data: {
+        batch: {
+          ...batch,
+          blood_type: batch.blood_group,
+          tested_by: batch.tested_by_name
+            ? {
+                full_name: batch.tested_by_name,
+              }
+            : null,
+          hospital: batch.hospital_name
+            ? {
+                name: batch.hospital_name,
+              }
+            : null,
+        },
+        transactions: mappedTransactions,
+      },
+    });
+  } catch (error) {
+    console.error("getOne blood inventory error:", error);
+
+    return res.status(500).json({
+      status: false,
+      message: "Lỗi lấy chi tiết lô máu",
+      error: error.message,
+    });
+  }
+},
 
   // CREATE MANUAL INVENTORY
   async create(req, res) {
