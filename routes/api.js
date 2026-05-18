@@ -40,6 +40,7 @@ const DoctorProfileController = require("../controllers/doctor/DoctorProfileCont
 const ChangePassDoctorController = require("../controllers/doctor/ChangePassController");
 const InventoryController = require("../controllers/doctor/InventoryController");
 const BloodInventoryController = require("../controllers/doctor/BloodInventoryController");
+const BloodInventoryIntelligenceController = require("../controllers/doctor/BloodInventoryIntelligenceController");
 const DonationAppointmentController = require("../controllers/doctor/DonationAppointmentController");
 const DonationController = require("../controllers/doctor/DonationController");
 const DonorManagementController = require("../controllers/doctor/DonorManagementController");
@@ -170,6 +171,13 @@ doctorRouter.post(
   "/emergency-requests/:id/recommendations/save",
   EmergencyRequestController.saveRecommendations
 );
+
+doctorRouter.get("/blood-inventory/intelligence/dashboard", BloodInventoryIntelligenceController.dashboard);
+doctorRouter.get("/blood-inventory/intelligence/expired", BloodInventoryIntelligenceController.listExpiredBatches);
+doctorRouter.post("/blood-inventory/intelligence/expired/process", BloodInventoryIntelligenceController.processExpiredBatches);
+doctorRouter.get("/blood-inventory/intelligence/group/:blood_group", BloodInventoryIntelligenceController.groupDetail);
+doctorRouter.get("/blood-inventory/intelligence/batch/:id", BloodInventoryIntelligenceController.batchDetail);
+doctorRouter.post("/blood-inventory/intelligence/emergency-request", BloodInventoryIntelligenceController.createEmergencyFromInventory);
 
 doctorRouter.get("/blood-inventory", BloodInventoryController.getAll);
 doctorRouter.post("/blood-inventory", BloodInventoryController.create);

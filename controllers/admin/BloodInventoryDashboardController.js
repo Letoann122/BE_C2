@@ -25,6 +25,115 @@ function buildBloodTypeLabel(bt) {
   return `${abo}${rh}`.trim() || "-";
 }
 
+function startOfDay(date) {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function endOfDay(date) {
+  const d = new Date(date);
+  d.setHours(23, 59, 59, 999);
+  return d;
+}
+
+function isDestroyType(type) {
+  const t = String(type || "").toUpperCase();
+  return ["EXPIRE", "EXPIRED", "DISCARD", "DISCARDED", "DESTROY", "DESTROYED"].includes(t);
+}
+
+function buildChartRange(query) {
+  const chartMode = String(query.chart_mode || "range");
+
+  const now = new Date();
+
+  if (chartMode === "date") {
+    const from = query.from ? startOfDay(query.from) : startOfDay(now);
+    const to = query.to ? endOfDay(query.to) : endOfDay(now);
+
+    return {
+      mode: "date",
+      groupBy: "day",
+      start: from,
+      end: to,
+    };
+  }
+
+  if (chartMode === "month") {
+    const monthValue = String(query.month || "").trim();
+    const fallbackYear = now.getFullYear();
+    const fallbackMonth = String(now.getMonth() + 1).padStart(2, "0");
+
+    const [yearText, monthText] = monthValue.includes("-")
+      ? monthValue.split("-")
+      : [String(fallbackYear), fallbackMonth];
+
+    const year = Number(yearText);
+    const month = Number(monthText);
+
+    const start = new Date(year, month - 1, 1);
+    const end = new Date(year, month, 0, 23, 59, 59, 999);
+
+    return {
+      mode: "month",
+      groupBy: "day",
+      start,
+      end,
+    };
+  }
+
+  if (chartMode === "year") {
+    const year = Number(query.year || now.getFullYear());
+
+    return {
+      mode: "year",
+      groupBy: "month",
+      start: new Date(year, 0, 1, 0, 0, 0, 0),
+      end: new Date(year, 11, 31, 23, 59, 59, 999),
+      year,
+    };
+  }
+
+  const range = Math.max(1, parseInt(query.range) || 7);
+
+  const start = new Date(now);
+  start.setDate(start.getDate() - (range - 1));
+  start.setHours(0, 0, 0, 0);
+
+  return {
+    mode: "range",
+    groupBy: "day",
+    range,
+    start,
+    end: endOfDay(now),
+  };
+}
+
+function buildChartLabels(chartRange) {
+  const labels = [];
+  const keys = [];
+
+  if (chartRange.groupBy === "month") {
+    for (let month = 1; month <= 12; month++) {
+      keys.push(`${chartRange.year}-${String(month).padStart(2, "0")}`);
+      labels.push(`Tháng ${month}`);
+    }
+
+    return { labels, keys };
+  }
+
+  const tmp = new Date(chartRange.start);
+
+  while (tmp <= chartRange.end) {
+    const key = toDateOnlyString(tmp);
+    keys.push(key);
+    labels.push(tmp.toLocaleDateString("vi-VN"));
+    tmp.setDate(tmp.getDate() + 1);
+  }
+
+  return { labels, keys };
+}
+
 module.exports = {
   async getDashboard(req, res) {
     try {
@@ -35,7 +144,6 @@ module.exports = {
       start.setDate(start.getDate() - (range - 1));
       start.setHours(0, 0, 0, 0);
 
-      // expiring: trong 7 ngày tới
       const expStart = new Date(now);
       expStart.setHours(0, 0, 0, 0);
 
@@ -45,6 +153,8 @@ module.exports = {
 
       const expStartStr = toDateOnlyString(expStart);
       const expEndStr = toDateOnlyString(expEnd);
+
+      const destroyTypes = ["EXPIRE", "EXPIRED", "DISCARD", "DISCARDED", "DESTROY", "DESTROYED"];
 
       // =========================
       // 1) Cards
@@ -56,7 +166,7 @@ module.exports = {
         }),
       ]);
 
-      const [inUnits, outUnits] = await Promise.all([
+      const [inUnits, outUnits, destroyUnits] = await Promise.all([
         InventoryTransaction.sum("units", {
           where: {
             tx_type: "IN",
@@ -69,10 +179,16 @@ module.exports = {
             occurred_at: { [Op.gte]: start },
           },
         }),
+        InventoryTransaction.sum("units", {
+          where: {
+            tx_type: { [Op.in]: destroyTypes },
+            occurred_at: { [Op.gte]: start },
+          },
+        }),
       ]);
 
       // =========================
-      // 2) Inventory summary by BloodType (3 cột)
+      // 2) Inventory summary by BloodType
       // =========================
       const inventoryAgg = await BloodInventory.findAll({
         attributes: [
@@ -103,7 +219,7 @@ module.exports = {
       }));
 
       // =========================
-      // 3) Latest batches + người nhập + donor_username (thực ra là full_name/email)
+      // 3) Latest batches
       // =========================
       const latest = await BloodInventory.findAll({
         limit: 10,
@@ -123,7 +239,6 @@ module.exports = {
         ],
       });
 
-      // Người nhập: lấy transaction IN gần nhất theo inventory_id
       const batchIds = latest.map((x) => x.id);
       const importerMap = new Map();
 
@@ -147,11 +262,6 @@ module.exports = {
         }
       }
 
-      /**
-       * donor_username:
-       * DB của bạn KHÔNG có users.username -> dùng users.full_name (fallback email)
-       * JOIN blood_inventory.donation_id -> donations.id -> donations.donor_user_id -> users.id
-       */
       const donorUsernameMap = new Map();
       const donationIds = latest
         .map((b) => b.donation_id)
@@ -190,11 +300,15 @@ module.exports = {
       }));
 
       // =========================
-      // 4) Transactions IN/OUT + bởi (bác sĩ nào làm)
+      // 4) Transactions IN/OUT/DESTROY
       // =========================
       const txRows = await InventoryTransaction.findAll({
-        limit: 80,
-        where: { tx_type: { [Op.in]: ["IN", "OUT"] } },
+        limit: 120,
+        where: {
+          tx_type: {
+            [Op.in]: ["IN", "OUT", ...destroyTypes],
+          },
+        },
         include: [
           { model: User, attributes: ["id", "full_name", "email", "role"] },
           {
@@ -215,6 +329,7 @@ module.exports = {
       const transactions = txRows.map((tx) => ({
         id: tx.id,
         tx_type: tx.tx_type,
+        tx_group: isDestroyType(tx.tx_type) ? "DESTROY" : tx.tx_type,
         units: tx.units,
         reason: tx.reason,
         occurred_at: tx.occurred_at,
@@ -226,45 +341,48 @@ module.exports = {
       }));
 
       // =========================
-      // 5) Chart series (IN/OUT) theo ngày
+      // 5) Chart series by range/date/month/year
       // =========================
+      const chartRange = buildChartRange(req.query);
+      const { labels, keys } = buildChartLabels(chartRange);
+
+      const dayExpr =
+        chartRange.groupBy === "month"
+          ? sequelize.literal("DATE_FORMAT(occurred_at, '%Y-%m')")
+          : fn("DATE", col("occurred_at"));
+
       const txAgg = await InventoryTransaction.findAll({
         attributes: [
-          [fn("DATE", col("occurred_at")), "day"],
+          [dayExpr, "period_key"],
           "tx_type",
           [fn("SUM", col("units")), "sum_units"],
         ],
         where: {
-          tx_type: { [Op.in]: ["IN", "OUT"] },
-          occurred_at: { [Op.gte]: start },
+          tx_type: {
+            [Op.in]: ["IN", "OUT", ...destroyTypes],
+          },
+          occurred_at: {
+            [Op.between]: [chartRange.start, chartRange.end],
+          },
         },
-        group: [fn("DATE", col("occurred_at")), "tx_type"],
-        order: [[sequelize.literal("day"), "ASC"]],
+        group: [dayExpr, "tx_type"],
+        order: [[sequelize.literal("period_key"), "ASC"]],
       });
 
-      const labels = [];
-      const dayKeyList = [];
-      const tmp = new Date(start);
-
-      for (let i = 0; i < range; i++) {
-        const key = toDateOnlyString(tmp);
-        dayKeyList.push(key);
-        labels.push(tmp.toLocaleDateString("vi-VN"));
-        tmp.setDate(tmp.getDate() + 1);
-      }
-
-      const in_series = new Array(range).fill(0);
-      const out_series = new Array(range).fill(0);
+      const in_series = new Array(keys.length).fill(0);
+      const out_series = new Array(keys.length).fill(0);
+      const destroy_series = new Array(keys.length).fill(0);
 
       for (const r of txAgg) {
-        const day = String(r.get("day"));
-        const type = r.get("tx_type");
+        const key = String(r.get("period_key"));
+        const type = String(r.get("tx_type") || "").toUpperCase();
         const sum = Number(r.get("sum_units") || 0);
 
-        const idx = dayKeyList.indexOf(day);
+        const idx = keys.indexOf(key);
         if (idx >= 0) {
-          if (type === "IN") in_series[idx] = sum;
-          if (type === "OUT") out_series[idx] = sum;
+          if (type === "IN") in_series[idx] += sum;
+          else if (type === "OUT") out_series[idx] += sum;
+          else if (isDestroyType(type)) destroy_series[idx] += sum;
         }
       }
 
@@ -276,12 +394,20 @@ module.exports = {
             total_units: Number(totalUnits || 0),
             in_units: Number(inUnits || 0),
             out_units: Number(outUnits || 0),
+            destroy_units: Number(destroyUnits || 0),
             expiring_units: Number(expiringUnits || 0),
           },
           inventory,
           latest_batches,
           transactions,
-          chart: { labels, in_series, out_series },
+          chart: {
+            labels,
+            in_series,
+            out_series,
+            destroy_series,
+            mode: chartRange.mode,
+            group_by: chartRange.groupBy,
+          },
         },
       });
     } catch (error) {
