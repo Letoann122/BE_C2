@@ -1,19 +1,17 @@
 "use strict";
 
 const AIChatbotService = require("../../services/AIChatbotService");
-const { detectIntent } = require("../../services/chatbot/ChatbotIntentService");
-const ChatbotDataService = require("../../services/chatbot/ChatbotDataService");
 
 const {
   User,
-  Donor,
-  BloodType,
   Appointment,
   Donation,
-  UserNotification,
+  Notification,
   DonationSite,
   Campaign,
   AppointmentSlot,
+  BloodInventory,
+  BloodType,
 } = require("../../models");
 
 const formatDateTime = (value) => {
@@ -29,20 +27,122 @@ const formatDateTime = (value) => {
   });
 };
 
-const getBloodTypeText = (bloodType) => {
-  if (!bloodType) return null;
-  return `${bloodType.abo || ""}${bloodType.rh || ""}`.trim() || null;
+
+const isInventoryQuestion = (message) => {
+  const text = String(message || "").toLowerCase();
+
+  return (
+    text.includes("kho máu") ||
+    text.includes("tồn kho") ||
+    text.includes("máu còn") ||
+    text.includes("nhóm máu nào thiếu") ||
+    text.includes("lô máu") ||
+    text.includes("sắp hết hạn")
+  );
+};
+
+const answerInventoryDirectly = async () => {
+  const rows = await BloodInventory.findAll({
+    include: [
+      {
+        model: BloodType,
+        as: "blood_type",
+        attributes: ["abo", "rh"],
+      },
+    ],
+  });
+
+  const groups = {};
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  rows.forEach((row) => {
+    const group = `${row.blood_type?.abo || ""}${row.blood_type?.rh || ""}`;
+    if (!group) return;
+
+    if (!groups[group]) {
+      groups[group] = { available: 0, testing: 0, expiring: 0 };
+    }
+
+    const units = Number(row.units || 0);
+    const exp = row.expiry_date ? new Date(row.expiry_date) : null;
+    if (exp) exp.setHours(0, 0, 0, 0);
+
+    if (row.status === "available") {
+      groups[group].available += units;
+
+      if (exp) {
+        const days = Math.ceil((exp.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+        if (days >= 0 && days <= 7) groups[group].expiring += 1;
+      }
+    }
+
+    if (row.status === "testing") {
+      groups[group].testing += units;
+    }
+  });
+
+  const list = Object.keys(groups)
+    .sort()
+    .map((group) => {
+      const item = groups[group];
+      let level = "Ổn định";
+      if (item.available <= 3) level = "Nguy cấp";
+      else if (item.available <= 8) level = "Thấp";
+      else if (item.expiring > 0) level = "Có lô sắp hết hạn";
+
+      return `- ${group}: ${item.available} túi khả dụng, ${item.testing} túi đang kiểm định, ${item.expiring} lô sắp hết hạn. Tình trạng: ${level}`;
+    })
+    .join("\n");
+
+  if (!list) return "Hiện chưa có dữ liệu kho máu trong hệ thống.";
+
+  return `Tổng quan kho máu hiện tại:\n${list}`;
+};
+
+const isAppointmentQuestion = (message) => {
+  const text = String(message || "").toLowerCase();
+
+  return (
+    text.includes("lịch hẹn") ||
+    text.includes("lịch hiến") ||
+    text.includes("cuộc hẹn") ||
+    text.includes("appointment") ||
+    text.includes("đặt lịch")
+  );
+};
+
+const answerAppointmentsDirectly = (appointments) => {
+  if (!appointments || appointments.length === 0) {
+    return "Bạn hiện chưa có lịch hẹn hiến máu nào gần đây.";
+  }
+
+  const list = appointments
+    .slice(0, 5)
+    .map((a) => {
+      const place =
+        a.donation_site?.name ||
+        a.campaign?.title ||
+        "Chưa có địa điểm";
+
+      return `- ${a.appointment_code || `#${a.id}`}: ${formatDateTime(
+        a.scheduled_at
+      )}, ${place}, trạng thái: ${a.status}`;
+    })
+    .join("\n");
+
+  return `Các lịch hẹn gần đây của bạn:\n${list}`;
 };
 
 const buildGuestContext = () => {
   return {
     authContext: "Người dùng chưa đăng nhập.",
     userContext:
-      "Không có dữ liệu cá nhân. Chỉ được trả lời thông tin chung về hiến máu, điều kiện hiến máu, quy trình và cách đặt lịch. Nếu hỏi dữ liệu cá nhân thì yêu cầu đăng nhập.",
+      "Không có dữ liệu cá nhân. Chỉ được trả lời thông tin chung về hiến máu, điều kiện hiến máu, quy trình và cách đặt lịch.",
   };
 };
 
-const buildUserContext = async (userId) => {
+const buildDonorContext = async (userId) => {
   const user = await User.findByPk(userId, {
     attributes: [
       "id",
@@ -55,17 +155,6 @@ const buildUserContext = async (userId) => {
       "address",
       "medical_history",
       "role",
-    ],
-  });
-
-  const donor = await Donor.findOne({
-    where: { user_id: userId },
-    include: [
-      {
-        model: BloodType,
-        required: false,
-        attributes: ["id", "abo", "rh"],
-      },
     ],
   });
 
@@ -84,13 +173,12 @@ const buildUserContext = async (userId) => {
         model: Campaign,
         as: "campaign",
         required: false,
-        attributes: ["id", "title", "status", "start_date", "end_date"],
+        attributes: ["id", "title", "status"],
       },
       {
         model: AppointmentSlot,
         as: "slot",
         required: false,
-        attributes: ["id", "slot_date", "start_time", "end_time", "slot_capacity", "current_count"],
       },
     ],
     order: [["scheduled_at", "DESC"]],
@@ -105,7 +193,7 @@ const buildUserContext = async (userId) => {
     limit: 5,
   });
 
-  const notifications = await UserNotification.findAll({
+  const notifications = await Notification.findAll({
     where: {
       user_id: userId,
     },
@@ -146,11 +234,9 @@ const buildUserContext = async (userId) => {
   const notificationsText =
     notifications.length > 0
       ? notifications
-          .map((n) => `- ${n.title}: ${n.message || ""}`)
+          .map((n) => `- ${n.title}: ${n.message || n.content || ""}`)
           .join("\n")
       : "Không có thông báo gần đây.";
-
-  const bloodType = user?.blood_group || getBloodTypeText(donor?.BloodType) || "Không có";
 
   return {
     authContext: `
@@ -159,20 +245,15 @@ Role: ${user?.role || "donor"}.
 User ID: ${userId}.
 `,
     userContext: `
-NGÀY HIỆN TẠI:
-${new Date().toLocaleDateString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" })}
-
 THÔNG TIN NGƯỜI DÙNG:
 - Họ tên: ${user?.full_name || "Không có"}
 - Email: ${user?.email || "Không có"}
 - SĐT: ${user?.phone || "Không có"}
-- Nhóm máu: ${bloodType}
-- Giới tính: ${user?.gender || donor?.gender || "Không có"}
-- Ngày sinh: ${user?.birthday || donor?.birthday || "Không có"}
-- Địa chỉ: ${user?.address || donor?.address || "Không có"}
-- Tiền sử bệnh: ${user?.medical_history || donor?.medical_history || "Không có"}
-- Số lần hiến máu ghi nhận: ${donor?.donation_count ?? 0}
-- Tổng lượng máu đã hiến: ${donor?.total_blood_ml ?? 0}ml
+- Nhóm máu: ${user?.blood_group || "Không có"}
+- Giới tính: ${user?.gender || "Không có"}
+- Ngày sinh: ${user?.birthday || "Không có"}
+- Địa chỉ: ${user?.address || "Không có"}
+- Tiền sử bệnh: ${user?.medical_history || "Không có"}
 
 LỊCH HẸN GẦN ĐÂY:
 ${appointmentsText}
@@ -183,6 +264,7 @@ ${donationsText}
 THÔNG BÁO GẦN ĐÂY:
 ${notificationsText}
 `,
+    appointments,
   };
 };
 
@@ -200,29 +282,50 @@ module.exports = {
 
       const userId = req.user?.userId || req.user?.id;
       const role = req.user?.role;
-      const cleanMessage = message.trim();
-      const intent = detectIntent(cleanMessage);
 
-      const dbReply = await ChatbotDataService.handleIntent({
-        intent,
-        message: cleanMessage,
-        userId,
-        role,
-      });
+      if (isInventoryQuestion(message)) {
+        if (!["doctor", "hospital", "admin"].includes(role)) {
+          return res.json({
+            status: true,
+            reply: "Bạn cần đăng nhập bằng tài khoản bác sĩ/hospital/admin để tra cứu dữ liệu kho máu.",
+            source: "database",
+            intent: "INVENTORY_SUMMARY",
+          });
+        }
 
-      if (dbReply) {
+        const reply = await answerInventoryDirectly();
+
         return res.json({
           status: true,
-          reply: dbReply,
+          reply,
           source: "database",
-          intent,
+          intent: "INVENTORY_SUMMARY",
         });
       }
 
-      const context = userId ? await buildUserContext(userId) : buildGuestContext();
+      if (!userId && isAppointmentQuestion(message)) {
+        return res.json({
+          status: true,
+          reply:
+            "Bạn cần đăng nhập để mình có thể tra cứu lịch hẹn hiến máu của bạn.",
+        });
+      }
+
+      let context = buildGuestContext();
+
+      if (userId) {
+        context = await buildDonorContext(userId);
+
+        if (isAppointmentQuestion(message)) {
+          return res.json({
+            status: true,
+            reply: answerAppointmentsDirectly(context.appointments),
+          });
+        }
+      }
 
       const reply = await AIChatbotService.ask(
-        cleanMessage,
+        message.trim(),
         context.authContext,
         context.userContext
       );
@@ -231,7 +334,7 @@ module.exports = {
         status: true,
         reply,
         source: "gemini",
-        intent,
+        intent: "GENERAL_AI",
       });
     } catch (err) {
       console.error("CHATBOT CONTROLLER ERROR:", err);
