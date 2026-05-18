@@ -9,105 +9,160 @@ const {
   Campaign,
   User,
 } = require("../models");
+
 const {
   normalizeTime,
   isValidSlotTime,
   buildSlotPayload,
   refreshSlotCounters,
-  isSlotExpired,
 } = require("../services/slotCapacityService");
+
 const {
   generateCampaignSlots,
 } = require("../services/slotGenerateService");
 
+// ==================== DATE HELPERS ====================
+// Lấy ngày hiện tại theo giờ Việt Nam, tránh lỗi UTC làm lệch ngày
+const getTodayVNISO = () => {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Ho_Chi_Minh",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+
+  const year = parts.find((p) => p.type === "year")?.value;
+  const month = parts.find((p) => p.type === "month")?.value;
+  const day = parts.find((p) => p.type === "day")?.value;
+
+  return `${year}-${month}-${day}`;
+};
+
+const toDateOnlyISO = (value) => {
+  if (!value) return null;
+
+  if (typeof value === "string") {
+    return value.slice(0, 10);
+  }
+
+  const d = new Date(value);
+
+  if (Number.isNaN(d.getTime())) return null;
+
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
+};
+
+const isPastDate = (value) => {
+  const date = toDateOnlyISO(value);
+
+  if (!date) return false;
+
+  return date < getTodayVNISO();
+};
+
+const toTimeRangeLabel = (startTime, endTime) => {
+  const start = startTime ? String(startTime).slice(0, 5) : "";
+  const end = endTime ? String(endTime).slice(0, 5) : "";
+
+  if (start && end) return `${start} - ${end}`;
+  if (start) return start;
+
+  return "-";
+};
 
 module.exports = {
   async index(req, res) {
-  try {
-    const {
-      type,
-      campaign_id,
-      donation_site_id,
-      date,
-      from_date,
-      to_date,
-    } = req.query;
+    try {
+      const {
+        type,
+        campaign_id,
+        donation_site_id,
+        date,
+        from_date,
+        to_date,
+      } = req.query;
 
-    const where = {};
+      const where = {};
 
-    if (type) where.type = type;
-    if (campaign_id) where.campaign_id = campaign_id;
-    if (donation_site_id) where.donation_site_id = donation_site_id;
+      if (type) where.type = type;
+      if (campaign_id) where.campaign_id = campaign_id;
+      if (donation_site_id) where.donation_site_id = donation_site_id;
 
-    if (date) {
-      where.slot_date = date;
-    } else if (from_date || to_date) {
-      where.slot_date = {};
+      if (date) {
+        where.slot_date = date;
+      } else if (from_date || to_date) {
+        where.slot_date = {};
 
-      if (from_date) where.slot_date[Op.gte] = from_date;
-      if (to_date) where.slot_date[Op.lte] = to_date;
+        if (from_date) where.slot_date[Op.gte] = from_date;
+        if (to_date) where.slot_date[Op.lte] = to_date;
+      }
+
+      const rows = await AppointmentSlot.findAll({
+        where,
+        include: [
+          {
+            model: DonationSite,
+            as: "donation_site",
+            required: false,
+          },
+          {
+            model: Campaign,
+            as: "campaign",
+            required: false,
+          },
+        ],
+        order: [
+          ["slot_date", "ASC"],
+          ["start_time", "ASC"],
+        ],
+      });
+
+      const data = rows.map((slot) => {
+        const payload = buildSlotPayload(slot);
+
+        const slotDate = String(payload.slot_date).slice(0, 10);
+        const endTime = String(payload.end_time || "").slice(0, 8);
+
+        const expired = new Date(`${slotDate}T${endTime}`) < new Date();
+
+        return {
+          ...payload,
+          time_slot_label:
+            payload.time_slot_label ||
+            toTimeRangeLabel(payload.start_time, payload.end_time),
+          is_expired: expired,
+          can_book:
+            !expired &&
+            Number(payload.current_count || 0) <
+              Number(payload.slot_capacity || 0),
+        };
+      });
+
+      const isDonor =
+        req.user?.role === "donor" ||
+        String(req.originalUrl || "").includes("/donor/");
+
+      const finalData = isDonor
+        ? data.filter((slot) => !slot.is_expired)
+        : data;
+
+      return res.json({
+        status: true,
+        data: finalData,
+      });
+    } catch (error) {
+      console.error("AppointmentSlotController.index error:", error);
+
+      return res.status(500).json({
+        status: false,
+        message: "Không tải được danh sách slot!",
+      });
     }
-
-    const rows = await AppointmentSlot.findAll({
-      where,
-      include: [
-        {
-          model: DonationSite,
-          as: "donation_site",
-          required: false,
-        },
-        {
-          model: Campaign,
-          as: "campaign",
-          required: false,
-        },
-      ],
-      order: [
-        ["slot_date", "ASC"],
-        ["start_time", "ASC"],
-      ],
-    });
-
-    const data = rows.map((slot) => {
-      const payload = buildSlotPayload(slot);
-
-      const date = String(payload.slot_date).slice(0, 10);
-      const endTime = String(payload.end_time).slice(0, 8);
-
-      const expired =
-        new Date(`${date}T${endTime}`) < new Date();
-
-      return {
-        ...payload,
-        is_expired: expired,
-        can_book:
-          !expired &&
-          Number(payload.current_count || 0) <
-            Number(payload.slot_capacity || 0),
-      };
-    });
-
-    const isDonor =
-      req.user?.role === "donor" ||
-      String(req.originalUrl || "").includes("/donor/");
-
-    const finalData = isDonor
-      ? data.filter((slot) => !slot.is_expired)
-      : data;
-
-    return res.json({
-      status: true,
-      data: finalData,
-    });
-  } catch (error) {
-    console.error("AppointmentSlotController.index error:", error);
-
-    return res.status(500).json({
-      status: false,
-      message: "Không tải được danh sách slot!",
-    });
-  }
-},
+  },
 
   async detail(req, res) {
     try {
@@ -135,12 +190,20 @@ module.exports = {
         });
       }
 
+      const data = buildSlotPayload(slot);
+
       return res.json({
         status: true,
-        data: buildSlotPayload(slot),
+        data: {
+          ...data,
+          time_slot_label:
+            data.time_slot_label ||
+            toTimeRangeLabel(data.start_time, data.end_time),
+        },
       });
     } catch (error) {
       console.error("AppointmentSlotController.detail error:", error);
+
       return res.status(500).json({
         status: false,
         message: "Không tải được chi tiết slot!",
@@ -168,14 +231,25 @@ module.exports = {
 
       if (!slot_date || !start || !end) {
         await t.rollback();
+
         return res.json({
           status: false,
           message: "Vui lòng nhập ngày và khung giờ!",
         });
       }
 
+      if (isPastDate(slot_date)) {
+        await t.rollback();
+
+        return res.json({
+          status: false,
+          message: "Không thể tạo slot cho ngày đã qua!",
+        });
+      }
+
       if (!isValidSlotTime(start, end)) {
         await t.rollback();
+
         return res.json({
           status: false,
           message: "Chỉ hỗ trợ 2 khung giờ: 07:00-11:00 hoặc 13:00-17:00!",
@@ -184,6 +258,7 @@ module.exports = {
 
       if (!["fixed_point", "campaign"].includes(type)) {
         await t.rollback();
+
         return res.json({
           status: false,
           message: "Loại slot không hợp lệ!",
@@ -192,6 +267,7 @@ module.exports = {
 
       if (type === "fixed_point" && !donation_site_id) {
         await t.rollback();
+
         return res.json({
           status: false,
           message: "Hiến máu cố định cần chọn điểm hiến!",
@@ -200,6 +276,7 @@ module.exports = {
 
       if (type === "campaign" && !campaign_id) {
         await t.rollback();
+
         return res.json({
           status: false,
           message: "Slot chiến dịch cần campaign_id!",
@@ -210,6 +287,7 @@ module.exports = {
 
       if (!Number.isInteger(capacity) || capacity <= 0) {
         await t.rollback();
+
         return res.json({
           status: false,
           message: "Số lượng slot phải lớn hơn 0!",
@@ -238,6 +316,7 @@ module.exports = {
 
       if (existed) {
         await t.rollback();
+
         return res.json({
           status: false,
           message: "Khung giờ này đã tồn tại!",
@@ -262,15 +341,23 @@ module.exports = {
 
       await t.commit();
 
+      const data = buildSlotPayload(slot);
+
       return res.json({
         status: true,
         message: "Tạo slot thành công!",
-        data: buildSlotPayload(slot),
+        data: {
+          ...data,
+          time_slot_label:
+            data.time_slot_label ||
+            toTimeRangeLabel(data.start_time, data.end_time),
+        },
       });
     } catch (error) {
       await t.rollback();
 
       console.error("AppointmentSlotController.create error:", error);
+
       return res.status(500).json({
         status: false,
         message: "Lỗi khi tạo slot!",
@@ -283,8 +370,14 @@ module.exports = {
 
     try {
       const { id } = req.params;
-      const { slot_capacity, location_custom, start_time, end_time, slot_date } =
-        req.body;
+
+      const {
+        slot_capacity,
+        location_custom,
+        start_time,
+        end_time,
+        slot_date,
+      } = req.body;
 
       const slot = await AppointmentSlot.findByPk(id, {
         transaction: t,
@@ -293,15 +386,38 @@ module.exports = {
 
       if (!slot) {
         await t.rollback();
+
         return res.status(404).json({
           status: false,
           message: "Không tìm thấy slot!",
         });
       }
 
+      const currentSlotDate = toDateOnlyISO(slot.slot_date);
+
+      if (isPastDate(currentSlotDate)) {
+        await t.rollback();
+
+        return res.json({
+          status: false,
+          message: "Không thể cập nhật slot của ngày đã qua!",
+        });
+      }
+
+      if (slot_date && isPastDate(slot_date)) {
+        await t.rollback();
+
+        return res.json({
+          status: false,
+          message: "Không thể chuyển slot về ngày đã qua!",
+        });
+      }
+
       const payload = {};
 
-      if (slot_date) payload.slot_date = slot_date;
+      if (slot_date) {
+        payload.slot_date = slot_date;
+      }
 
       if (start_time || end_time) {
         const start = normalizeTime(start_time || slot.start_time);
@@ -309,6 +425,7 @@ module.exports = {
 
         if (!isValidSlotTime(start, end)) {
           await t.rollback();
+
           return res.json({
             status: false,
             message: "Chỉ hỗ trợ 2 khung giờ: 07:00-11:00 hoặc 13:00-17:00!",
@@ -324,17 +441,19 @@ module.exports = {
 
         if (!Number.isInteger(capacity) || capacity <= 0) {
           await t.rollback();
+
           return res.json({
             status: false,
             message: "Số lượng slot phải lớn hơn 0!",
           });
         }
 
-        if (capacity < Number(slot.current_count)) {
+        if (capacity < Number(slot.current_count || 0)) {
           await t.rollback();
+
           return res.json({
             status: false,
-            message: "Không thể giảm capacity nhỏ hơn số người đang đăng ký!",
+            message: "Không thể giảm sức chứa nhỏ hơn số người đang đăng ký!",
           });
         }
 
@@ -362,6 +481,7 @@ module.exports = {
       await t.rollback();
 
       console.error("AppointmentSlotController.update error:", error);
+
       return res.status(500).json({
         status: false,
         message: "Lỗi khi cập nhật slot!",
@@ -382,14 +502,25 @@ module.exports = {
 
       if (!slot) {
         await t.rollback();
+
         return res.status(404).json({
           status: false,
           message: "Không tìm thấy slot!",
         });
       }
 
-      if (Number(slot.current_count) > 0) {
+      if (isPastDate(slot.slot_date)) {
         await t.rollback();
+
+        return res.json({
+          status: false,
+          message: "Không thể xoá slot của ngày đã qua!",
+        });
+      }
+
+      if (Number(slot.current_count || 0) > 0) {
+        await t.rollback();
+
         return res.json({
           status: false,
           message: "Không thể xoá slot đang có người đăng ký!",
@@ -408,6 +539,7 @@ module.exports = {
       await t.rollback();
 
       console.error("AppointmentSlotController.delete error:", error);
+
       return res.status(500).json({
         status: false,
         message: "Lỗi khi xoá slot!",
@@ -452,19 +584,28 @@ module.exports = {
         order: [["created_at", "DESC"]],
       });
 
+      const slotData = buildSlotPayload(slot);
+
       return res.json({
         status: true,
-        slot: buildSlotPayload(slot),
+        slot: {
+          ...slotData,
+          time_slot_label:
+            slotData.time_slot_label ||
+            toTimeRangeLabel(slotData.start_time, slotData.end_time),
+        },
         data: rows,
       });
     } catch (error) {
       console.error("AppointmentSlotController.appointments error:", error);
+
       return res.status(500).json({
         status: false,
         message: "Không tải được danh sách người trong slot!",
       });
     }
   },
+
   async dashboard(req, res) {
     try {
       const {
@@ -475,7 +616,7 @@ module.exports = {
         campaign_id,
       } = req.query;
 
-      const today = new Date().toISOString().slice(0, 10);
+      const today = getTodayVNISO();
 
       const where = {};
 
@@ -485,6 +626,7 @@ module.exports = {
 
       if (from_date || to_date) {
         where.slot_date = {};
+
         if (from_date) where.slot_date[Op.gte] = from_date;
         if (to_date) where.slot_date[Op.lte] = to_date;
       } else {
@@ -511,7 +653,16 @@ module.exports = {
         ],
       });
 
-      const data = slots.map(buildSlotPayload);
+      const data = slots.map((slot) => {
+        const payload = buildSlotPayload(slot);
+
+        return {
+          ...payload,
+          time_slot_label:
+            payload.time_slot_label ||
+            toTimeRangeLabel(payload.start_time, payload.end_time),
+        };
+      });
 
       const totalCapacity = data.reduce(
         (sum, item) => sum + Number(item.slot_capacity || 0),
@@ -659,9 +810,9 @@ module.exports = {
           id: slot.id,
           type: slot.type,
           slot_date: slot.slot_date,
-          time_range: `${String(slot.start_time).slice(0, 5)} - ${String(
-            slot.end_time
-          ).slice(0, 5)}`,
+          time_range:
+            slot.time_slot_label ||
+            toTimeRangeLabel(slot.start_time, slot.end_time),
           current_count: slot.current_count,
           slot_capacity: slot.slot_capacity,
           available_count: slot.available_count,
@@ -689,6 +840,7 @@ module.exports = {
       });
     }
   },
+
   async generateCampaign(req, res) {
     try {
       const { campaign_id } = req.params;

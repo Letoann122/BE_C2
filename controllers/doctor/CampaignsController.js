@@ -1,7 +1,7 @@
 "use strict";
 
 const { Campaign, User, DonationSite, Appointment } = require("../../models");
-const { Op, fn, col } = require("sequelize");
+const { Op, fn, col, where } = require("sequelize");
 
 const {
   getDisplayCampaignStatus,
@@ -20,6 +20,184 @@ const attachDisplayStatus = (campaign) => {
   );
 
   return campaign;
+};
+
+const normalizeText = (value) => {
+  return String(value || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+};
+
+const formatDateVN = (value) => {
+  if (!value) return "-";
+
+  return new Date(value).toLocaleDateString("vi-VN");
+};
+
+const normalizeDateOnly = (value) => {
+  const date = new Date(value);
+  date.setHours(0, 0, 0, 0);
+  return date;
+};
+
+const validateCampaignDate = ({ start_date, end_date }) => {
+  if (!start_date || !end_date) {
+    return {
+      valid: false,
+      message: "Vui lòng nhập ngày bắt đầu và ngày kết thúc chiến dịch!",
+    };
+  }
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const start = normalizeDateOnly(start_date);
+  const end = normalizeDateOnly(end_date);
+
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    return {
+      valid: false,
+      message: "Ngày bắt đầu hoặc ngày kết thúc không hợp lệ!",
+    };
+  }
+
+  if (start < today) {
+    return {
+      valid: false,
+      message: "Ngày bắt đầu không được nhỏ hơn hôm nay!",
+    };
+  }
+
+  if (end < start) {
+    return {
+      valid: false,
+      message: "Ngày kết thúc phải lớn hơn hoặc bằng ngày bắt đầu!",
+    };
+  }
+
+  if (end < today) {
+    return {
+      valid: false,
+      message: "Ngày kết thúc không được nhỏ hơn hôm nay!",
+    };
+  }
+
+  return {
+    valid: true,
+  };
+};
+
+const validateCampaignLocationDateConflict = async ({
+  start_date,
+  end_date,
+  locate_type,
+  donation_site_id,
+  location,
+  excludeCampaignId = null,
+}) => {
+  const whereClause = {
+    // Có giao nhau ngày:
+    // campaign.start_date <= new.end_date
+    // campaign.end_date >= new.start_date
+    start_date: {
+      [Op.lte]: end_date,
+    },
+    end_date: {
+      [Op.gte]: start_date,
+    },
+
+    // Không tính chiến dịch đã bị từ chối hoặc đã đóng
+    approval_status: {
+      [Op.ne]: "rejected",
+    },
+    status: {
+      [Op.ne]: "ended",
+    },
+  };
+
+  if (excludeCampaignId) {
+    whereClause.id = {
+      [Op.ne]: excludeCampaignId,
+    };
+  }
+
+  if (locate_type === "donation_site") {
+    if (!donation_site_id) {
+      return {
+        valid: false,
+        message: "Vui lòng chọn điểm hiến máu cho chiến dịch!",
+      };
+    }
+
+    whereClause.locate_type = "donation_site";
+    whereClause.donation_site_id = donation_site_id;
+  } else if (locate_type === "custom") {
+    const normalizedLocation = normalizeText(location);
+
+    if (!normalizedLocation) {
+      return {
+        valid: false,
+        message: "Vui lòng nhập địa điểm tổ chức chiến dịch!",
+      };
+    }
+
+    whereClause.locate_type = "custom";
+    whereClause[Op.and] = [
+      where(
+        fn("LOWER", fn("TRIM", col("location"))),
+        normalizedLocation
+      ),
+    ];
+  } else {
+    return {
+      valid: false,
+      message: "Loại địa điểm chiến dịch không hợp lệ!",
+    };
+  }
+
+  const existedCampaign = await Campaign.findOne({
+    where: whereClause,
+    include: [
+      {
+        model: DonationSite,
+        as: "donation_site",
+        required: false,
+      },
+    ],
+    attributes: [
+      "id",
+      "title",
+      "start_date",
+      "end_date",
+      "location",
+      "locate_type",
+      "donation_site_id",
+      "approval_status",
+      "status",
+    ],
+  });
+
+  if (existedCampaign) {
+    const place =
+      existedCampaign.locate_type === "donation_site"
+        ? existedCampaign.donation_site?.name || "điểm hiến máu này"
+        : existedCampaign.location || "địa điểm này";
+
+    return {
+      valid: false,
+      message: `${place} đã có chiến dịch "${existedCampaign.title}" trong khoảng ${formatDateVN(
+        existedCampaign.start_date
+      )} - ${formatDateVN(
+        existedCampaign.end_date
+      )}. Vui lòng chọn ngày khác hoặc địa điểm khác.`,
+      conflict: existedCampaign,
+    };
+  }
+
+  return {
+    valid: true,
+  };
 };
 
 module.exports = {
@@ -225,30 +403,31 @@ module.exports = {
         donation_site_id,
       } = req.body;
 
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
+      const dateCheck = validateCampaignDate({
+        start_date,
+        end_date,
+      });
 
-      const start = new Date(start_date);
-      const end = new Date(end_date);
-
-      if (start < today) {
+      if (!dateCheck.valid) {
         return res.json({
           status: false,
-          message: "Ngày bắt đầu không được nhỏ hơn hôm nay!",
+          message: dateCheck.message,
         });
       }
 
-      if (end < start) {
-        return res.json({
-          status: false,
-          message: "Ngày kết thúc phải lớn hơn hoặc bằng ngày bắt đầu!",
-        });
-      }
+      const conflictCheck = await validateCampaignLocationDateConflict({
+        start_date,
+        end_date,
+        locate_type,
+        donation_site_id,
+        location,
+      });
 
-      if (end < today) {
+      if (!conflictCheck.valid) {
         return res.json({
           status: false,
-          message: "Ngày kết thúc không được nhỏ hơn hôm nay!",
+          message: conflictCheck.message,
+          conflict: conflictCheck.conflict || null,
         });
       }
 
@@ -329,6 +508,35 @@ module.exports = {
           canEdit: false,
           message: "Cập nhật mô tả thành công (chiến dịch đã bắt đầu)",
           data: campaign,
+        });
+      }
+
+      const dateCheck = validateCampaignDate({
+        start_date: data.start_date,
+        end_date: data.end_date,
+      });
+
+      if (!dateCheck.valid) {
+        return res.json({
+          status: false,
+          message: dateCheck.message,
+        });
+      }
+
+      const conflictCheck = await validateCampaignLocationDateConflict({
+        start_date: data.start_date,
+        end_date: data.end_date,
+        locate_type: data.locate_type,
+        donation_site_id: data.donation_site_id,
+        location: data.location,
+        excludeCampaignId: id,
+      });
+
+      if (!conflictCheck.valid) {
+        return res.json({
+          status: false,
+          message: conflictCheck.message,
+          conflict: conflictCheck.conflict || null,
         });
       }
 
