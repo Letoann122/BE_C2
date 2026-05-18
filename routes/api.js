@@ -282,11 +282,18 @@ adminRouter.get("/slot-dashboard", AppointmentSlotController.dashboard);
 adminRouter.get("/campaigns/pending", CampaignApprovalController.listPending);
 adminRouter.patch("/campaigns/:id/approve", CampaignApprovalController.approve);
 adminRouter.patch("/campaigns/:id/reject", CampaignApprovalController.reject);
-adminRouter.get("/campaigns", CampaignsController.getAllCampaigns);
-adminRouter.get("/campaigns/:id", CampaignsController.getCampaignDetail);
-adminRouter.get("/campaigns/:id/appointments", CampaignsController.getCampaignAppointments);
-adminRouter.put("/campaigns/:id", CampaignsController.updateCampaign);
-adminRouter.patch("/campaigns/:id/close", CampaignsController.closeCampaign);
+
+adminRouter.get("/campaigns", CampaignsManagementController.getAllCampaigns);
+
+// Phải đặt dòng này TRƯỚC /campaigns/:id
+adminRouter.get(
+  "/campaigns/:id/appointments",
+  CampaignsController.getCampaignAppointments
+);
+
+adminRouter.get("/campaigns/:id", CampaignsManagementController.getCampaignDetail);
+adminRouter.put("/campaigns/:id", CampaignsManagementController.updateCampaign);
+adminRouter.patch("/campaigns/:id/close", CampaignsManagementController.closeCampaign);
 adminRouter.get("/donation-sites", CampaignsManagementController.getDonationSites);
 
 adminRouter.get("/achievements", AchievementAdminController.index);

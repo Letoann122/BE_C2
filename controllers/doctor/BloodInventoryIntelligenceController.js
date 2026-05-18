@@ -17,7 +17,6 @@ const { Op } = require("sequelize");
 
 const SAFE_THRESHOLDS = {
   CRITICAL: 3,
-  LOW: 8,
   OVERSTOCK: 30,
   EXPIRING_DAYS: 7,
   FORECAST_DAYS: 7,
@@ -93,7 +92,6 @@ function classifyInventory(availableUnits, expiringCount = 0, expiredUnits = 0) 
   if (Number(availableUnits || 0) <= SAFE_THRESHOLDS.CRITICAL) return "critical";
   if (Number(expiredUnits || 0) > 0) return "critical";
   if (Number(expiringCount || 0) > 0) return "expiring_risk";
-  if (Number(availableUnits || 0) <= SAFE_THRESHOLDS.LOW) return "low";
   if (Number(availableUnits || 0) >= SAFE_THRESHOLDS.OVERSTOCK) return "overstock";
   return "normal";
 }
@@ -101,7 +99,6 @@ function classifyInventory(availableUnits, expiringCount = 0, expiredUnits = 0) 
 function statusText(status) {
   return {
     critical: "Nguy cấp",
-    low: "Thấp",
     normal: "Ổn định",
     overstock: "Dư thừa",
     expiring_risk: "Rủi ro hết hạn",
@@ -173,6 +170,25 @@ function toPlainBatch(batch) {
   };
 }
 
+async function syncExpiredInventory(transaction = null) {
+  const today = todayDateOnly();
+
+  await BloodInventory.update(
+    {
+      status: "expired",
+      quality_note: "Tự động cập nhật hết hạn do quá ngày sử dụng",
+    },
+    {
+      where: {
+        expiry_date: { [Op.lt]: today },
+        units: { [Op.gt]: 0 },
+        status: { [Op.notIn]: ["expired", "discarded"] },
+      },
+      transaction,
+    }
+  );
+}
+
 async function getInventoryRows() {
   return BloodInventory.findAll({
     include: [{ model: BloodType, as: "blood_type", attributes: ["id", "abo", "rh"] }],
@@ -226,7 +242,7 @@ function buildGroups(rows, usageMap = {}) {
       if (json.expiry_status === "expired") {
         g.expired_units += units;
         g.expired_batches += 1;
-      } else {
+      } else if (units > 0) {
         g.available_units += units;
         g.available_batches += 1;
 
@@ -234,7 +250,7 @@ function buildGroups(rows, usageMap = {}) {
           g.expiring_batches += 1;
         }
 
-        if (units > 0 && !g.fefo_batch) {
+        if (!g.fefo_batch) {
           g.fefo_batch = {
             id: json.id,
             code: `BL${String(json.id).padStart(6, "0")}`,
@@ -253,7 +269,7 @@ function buildGroups(rows, usageMap = {}) {
       }
     }
 
-    if (json.status === "testing") {
+    if (json.status === "testing" && units > 0) {
       g.testing_units += units;
       g.testing_batches += 1;
     }
@@ -262,7 +278,7 @@ function buildGroups(rows, usageMap = {}) {
       g.discarded_units += units;
     }
 
-    if (json.status === "expired") {
+    if (json.status === "expired" && units > 0) {
       g.expired_units += units;
       g.expired_batches += 1;
     }
@@ -370,6 +386,8 @@ function getOverviewStats(groups, rows) {
 module.exports = {
   async dashboard(req, res) {
     try {
+      await syncExpiredInventory();
+
       const rows = await getInventoryRows();
       const usageMap = await getUsageMap();
       const groups = buildGroups(rows, usageMap);
@@ -381,7 +399,7 @@ module.exports = {
         .slice(0, 10);
 
       const fefoSuggestions = plainRows
-        .filter((b) => b.status === "available" && b.expiry_status !== "expired" && Number(b.units || 0) > 0)
+        .filter((b) => b.status === "available" && b.expiry_status !== "expired" && b.expiry_status !== "empty" && Number(b.units || 0) > 0)
         .sort((a, b) => {
           const da = Number(a.days_left ?? 9999);
           const db = Number(b.days_left ?? 9999);
@@ -430,6 +448,8 @@ module.exports = {
 
   async groupDetail(req, res) {
     try {
+      await syncExpiredInventory();
+
       const bloodGroup = String(req.params.blood_group || "").trim().toUpperCase();
       const rows = await getInventoryRows();
       const usageMap = await getUsageMap();
@@ -458,7 +478,14 @@ module.exports = {
         data: {
           group,
           batches,
-          fefo_batch: batches.find((b) => b.status === "available" && b.expiry_status !== "expired" && Number(b.units || 0) > 0) || null,
+          fefo_batch:
+            batches.find(
+              (b) =>
+                b.status === "available" &&
+                b.expiry_status !== "expired" &&
+                b.expiry_status !== "empty" &&
+                Number(b.units || 0) > 0
+            ) || null,
           filters: {
             statuses: ["all", "available", "testing", "discarded", "expired"],
             expiry: ["all", "valid", "expiring_soon", "expired", "empty"],
@@ -477,6 +504,8 @@ module.exports = {
 
   async batchDetail(req, res) {
     try {
+      await syncExpiredInventory();
+
       const { id } = req.params;
 
       const batch = await BloodInventory.findByPk(id, {

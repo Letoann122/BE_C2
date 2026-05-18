@@ -91,6 +91,23 @@ const getEmergencyStats = async (emergencyRequestId, transaction = null) => {
     declined,
   };
 };
+const filterEligibleRecommendations = (result) => {
+  const recommendations = Array.isArray(result?.recommendations)
+    ? result.recommendations
+    : [];
+
+  const eligibleRecommendations = recommendations.filter((donor) => {
+    return donor.eligible === true;
+  });
+
+  return {
+    ...result,
+    recommendations: eligibleRecommendations,
+    total_recommendations: eligibleRecommendations.length,
+    excluded_ineligible_count:
+      recommendations.length - eligibleRecommendations.length,
+  };
+};
 
 module.exports = {
   async index(req, res) {
@@ -291,10 +308,12 @@ module.exports = {
         limit,
       });
 
+      const filteredResult = filterEligibleRecommendations(result);
+
       return res.json({
         status: true,
-        message: "Lấy danh sách donor đề xuất thành công!",
-        data: result,
+        message: "Lấy danh sách donor đủ điều kiện đề xuất thành công!",
+        data: filteredResult,
       });
     } catch (error) {
       console.error("EmergencyRequestController.recommendations error:", error);
@@ -331,9 +350,24 @@ module.exports = {
         limit: limit || 20,
       });
 
+      const filteredResult = filterEligibleRecommendations(result);
+      const eligibleRecommendations = filteredResult.recommendations;
+
+      if (eligibleRecommendations.length === 0) {
+        await t.rollback();
+
+        return res.json({
+          status: false,
+          message: "Không có donor nào đủ điều kiện để lưu vào danh sách đề xuất!",
+          data: {
+            excluded_ineligible_count: filteredResult.excluded_ineligible_count,
+          },
+        });
+      }
+
       const rows = [];
 
-      for (const donor of result.recommendations) {
+      for (const donor of eligibleRecommendations) {
         const [response, created] = await EmergencyRequestResponse.findOrCreate({
           where: {
             emergency_request_id: id,
@@ -375,10 +409,11 @@ module.exports = {
 
       return res.json({
         status: true,
-        message: "Đã lưu danh sách donor đề xuất!",
+        message: `Đã lưu ${rows.length} donor đủ điều kiện vào danh sách đề xuất!`,
         data: {
           rows,
           stats,
+          excluded_ineligible_count: filteredResult.excluded_ineligible_count,
         },
       });
     } catch (error) {
