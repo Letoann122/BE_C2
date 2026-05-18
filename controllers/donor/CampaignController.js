@@ -8,6 +8,7 @@ const {
   DonationSite,
   Appointment,
   AppointmentSlot,
+  User,
 } = require("../../models");
 
 const {
@@ -79,72 +80,55 @@ const buildVNDateTime = (dateKeyValue, timeValue) => {
 
 module.exports = {
   async publicCampaigns(req, res) {
-    try {
-      const { status = "active" } = req.query;
+  try {
+    const { status = "" } = req.query;
 
-      const where = {
-        approval_status: "approved",
-      };
+    const where = {
+      approval_status: "approved",
+      status: ["upcoming", "running"],
+    };
 
-      if (status && status !== "active" && status !== "all") {
-        where.status = status;
-      }
-
-      if (status === "active") {
-        where.status = {
-          [Op.in]: ["upcoming", "running"],
-        };
-      }
-
-      const campaigns = await Campaign.findAll({
-        where,
-        include: [
-          {
-            model: DonationSite,
-            as: "donation_site",
-            required: false,
-          },
-        ],
-        order: [
-          ["status", "ASC"],
-          ["start_date", "ASC"],
-        ],
-      });
-
-      const data = campaigns.map((c) => {
-        const raw = c.toJSON();
-
-        return {
-          id: raw.id,
-          title: raw.title,
-          content: raw.content,
-          start_date: raw.start_date,
-          end_date: raw.end_date,
-          is_emergency: raw.is_emergency,
-          locate_type: raw.locate_type,
-          donation_site_id: raw.donation_site_id,
-          location: raw.location,
-
-          // QUAN TRỌNG: donor dùng status từ DB để sync admin/doctor
-          status: getDisplayCampaignStatus(raw),
-
-          location_display: buildLocationDisplay(raw),
-        };
-      });
-
-      return res.json({
-        status: true,
-        data,
-      });
-    } catch (err) {
-      console.error("CampaignController.publicCampaigns error:", err);
-
-      return res.status(500).json({
-        status: false,
-        message: err.message,
-      });
+    // Nếu FE truyền filter status thì vẫn chỉ cho phép upcoming/running
+    if (status && ["upcoming", "running"].includes(status)) {
+      where.status = status;
     }
-  },
+
+    const campaigns = await Campaign.findAll({
+      where,
+      include: [
+        {
+          model: DonationSite,
+          as: "donation_site",
+          required: false,
+        },
+        {
+          model: User,
+          as: "creator",
+          attributes: ["id", "full_name"],
+          required: false,
+        },
+      ],
+      order: [
+        ["start_date", "DESC"],
+        ["id", "DESC"],
+      ],
+    });
+
+    return res.json({
+      status: true,
+      message: "Lấy danh sách chiến dịch thành công!",
+      data: campaigns,
+    });
+  } catch (error) {
+    console.error("publicCampaigns error:", error);
+
+    return res.status(500).json({
+      status: false,
+      message: "Không tải được danh sách chiến dịch!",
+      error: error.message,
+    });
+  }
+},
 
   async publicCampaignDetail(req, res) {
     try {

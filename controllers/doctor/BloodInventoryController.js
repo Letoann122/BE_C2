@@ -839,83 +839,52 @@ async getOne(req, res) {
 
   // EXPORT
   async export(req, res) {
-    const t = await sequelize.transaction();
+  const t = await sequelize.transaction();
 
-    try {
-      const { blood_type_id, units, reason, inventory_id } = req.body;
-      const authUser = req.user;
+  try {
+    const { blood_type_id, units, reason, inventory_id } = req.body;
+    const authUser = req.user;
 
-      if (!units || Number(units) <= 0) {
+    if (!units || Number(units) <= 0) {
+      await t.rollback();
+      return res.json({
+        status: false,
+        message: "Số lượng xuất phải lớn hơn 0",
+      });
+    }
+
+    // EXPORT BY SPECIFIC INVENTORY
+    if (inventory_id) {
+      const batch = await BloodInventory.findByPk(inventory_id, {
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
+
+      if (!batch) {
         await t.rollback();
         return res.json({
           status: false,
-          message: "Số lượng xuất phải lớn hơn 0",
+          message: "Không tìm thấy lô máu cần xuất",
         });
       }
 
-      // EXPORT BY SPECIFIC INVENTORY
-      if (inventory_id) {
-        const batch = await BloodInventory.findByPk(inventory_id, {
-          transaction: t,
-          lock: t.LOCK.UPDATE,
-        });
-
-        if (!batch) {
-          await t.rollback();
-          return res.json({
-            status: false,
-            message: "Không tìm thấy lô máu cần xuất",
-          });
-        }
-
-        if (batch.status === INVENTORY_STATUS.TESTING) {
-          await t.rollback();
-          return res.json({
-            status: false,
-            message: "Túi máu đang kiểm định, chưa thể xuất kho",
-          });
-        }
-
-        if (batch.status === INVENTORY_STATUS.DISCARDED) {
-          await t.rollback();
-          return res.json({
-            status: false,
-            message: "Túi máu đã bị loại bỏ, không thể xuất kho sử dụng",
-          });
-        }
-
-        if (batch.status === INVENTORY_STATUS.EXPIRED) {
-          await t.rollback();
-          return res.json({
-            status: false,
-            message: "Túi máu đã hết hạn, không thể xuất kho",
-          });
-        }
-
-        const currentUnits = Number(batch.units || 0);
-        const take = Number(units);
-
-        if (currentUnits <= 0 || take > currentUnits) {
-          await t.rollback();
-          return res.json({
-            status: false,
-            message: "Không đủ số lượng túi trong lô này để xuất",
-          });
-        }
-
-        const newUnits = currentUnits - take;
-
-        await batch.update({ units: newUnits }, { transaction: t });
+      if (isExpired(batch.expiry_date)) {
+        await batch.update(
+          {
+            status: INVENTORY_STATUS.EXPIRED,
+            quality_note: "Tự động cập nhật hết hạn do quá ngày sử dụng",
+          },
+          { transaction: t }
+        );
 
         await createInventoryTx(
           {
             inventoryId: batch.id,
-            userId: authUser?.userId,
-            txType: "OUT",
-            units: take,
-            reason:
-              reason ||
-              `Xuất ${take} túi từ lô id=${batch.id} để sử dụng`,
+            userId: authUser?.userId || authUser?.id,
+            txType: "EXPIRE",
+            units: Number(batch.units || 0),
+            reason: "Tự động cập nhật hết hạn trước khi xuất kho",
+            refDonationId: batch.donation_id || null,
           },
           { transaction: t }
         );
@@ -923,90 +892,174 @@ async getOne(req, res) {
         await t.commit();
 
         return res.json({
-          status: true,
-          message: "Xuất túi máu từ lô thành công",
+          status: false,
+          message: "Túi máu đã hết hạn, không thể xuất kho",
         });
       }
 
-      // EXPORT BY BLOOD TYPE
-      if (!blood_type_id) {
+      if (batch.status === INVENTORY_STATUS.TESTING) {
         await t.rollback();
         return res.json({
           status: false,
-          message: "Thiếu thông tin nhóm máu hoặc lô máu để xuất",
+          message: "Túi máu đang kiểm định, chưa thể xuất kho",
         });
       }
 
-      const today = new Date();
+      if (batch.status === INVENTORY_STATUS.DISCARDED) {
+        await t.rollback();
+        return res.json({
+          status: false,
+          message: "Túi máu đã bị loại bỏ, không thể xuất kho sử dụng",
+        });
+      }
 
-      const batches = await BloodInventory.findAll({
-        where: {
-          blood_type_id,
-          status: INVENTORY_STATUS.AVAILABLE,
-          units: { [Op.gt]: 0 },
-          expiry_date: { [Op.gte]: today },
+      if (batch.status === INVENTORY_STATUS.EXPIRED) {
+        await t.rollback();
+        return res.json({
+          status: false,
+          message: "Túi máu đã hết hạn, không thể xuất kho",
+        });
+      }
+
+      const currentUnits = Number(batch.units || 0);
+      const take = Number(units);
+
+      if (currentUnits <= 0 || take > currentUnits) {
+        await t.rollback();
+        return res.json({
+          status: false,
+          message: "Không đủ số lượng túi trong lô này để xuất",
+        });
+      }
+
+      const newUnits = currentUnits - take;
+
+      await batch.update({ units: newUnits }, { transaction: t });
+
+      await createInventoryTx(
+        {
+          inventoryId: batch.id,
+          userId: authUser?.userId || authUser?.id,
+          txType: "OUT",
+          units: take,
+          reason:
+            reason ||
+            `Xuất ${take} túi từ lô id=${batch.id} để sử dụng`,
         },
-        order: [
-          ["expiry_date", "ASC"],
-          ["id", "ASC"],
-        ],
-        transaction: t,
-        lock: t.LOCK.UPDATE,
+        { transaction: t }
+      );
+
+      await t.commit();
+
+      return res.json({
+        status: true,
+        message: "Xuất túi máu từ lô thành công",
       });
+    }
 
-      if (!batches.length) {
-        await t.rollback();
-        return res.json({
-          status: false,
-          message: "Không còn túi máu khả dụng phù hợp để xuất",
-        });
-      }
+    // EXPORT BY BLOOD TYPE
+    if (!blood_type_id) {
+      await t.rollback();
+      return res.json({
+        status: false,
+        message: "Thiếu thông tin nhóm máu hoặc lô máu để xuất",
+      });
+    }
 
-      let remaining = Number(units);
+    const today = normalizeDate(new Date());
 
-      for (const batch of batches) {
-        if (remaining <= 0) break;
+    const batches = await BloodInventory.findAll({
+      where: {
+        blood_type_id,
+        status: INVENTORY_STATUS.AVAILABLE,
+        units: { [Op.gt]: 0 },
+        expiry_date: { [Op.gte]: today },
+      },
+      order: [
+        ["expiry_date", "ASC"],
+        ["id", "ASC"],
+      ],
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
 
-        const take = Math.min(Number(batch.units), remaining);
-        const newUnits = Number(batch.units) - take;
+    if (!batches.length) {
+      await t.rollback();
+      return res.json({
+        status: false,
+        message: "Không còn túi máu khả dụng phù hợp để xuất",
+      });
+    }
 
-        await batch.update({ units: newUnits }, { transaction: t });
+    let remaining = Number(units);
 
-        await createInventoryTx(
+    for (const batch of batches) {
+      if (remaining <= 0) break;
+
+      if (isExpired(batch.expiry_date)) {
+        await batch.update(
           {
-            inventoryId: batch.id,
-            userId: authUser?.userId,
-            txType: "OUT",
-            units: take,
-            reason:
-              reason ||
-              `Xuất ${take} túi khả dụng từ lô id=${batch.id} (blood_type_id=${blood_type_id})`,
+            status: INVENTORY_STATUS.EXPIRED,
+            quality_note: "Tự động cập nhật hết hạn do quá ngày sử dụng",
           },
           { transaction: t }
         );
 
-        remaining -= take;
+        await createInventoryTx(
+          {
+            inventoryId: batch.id,
+            userId: authUser?.userId || authUser?.id,
+            txType: "EXPIRE",
+            units: Number(batch.units || 0),
+            reason: "Tự động cập nhật hết hạn trong quá trình xuất kho",
+            refDonationId: batch.donation_id || null,
+          },
+          { transaction: t }
+        );
+
+        continue;
       }
 
-      if (remaining > 0) {
-        await t.rollback();
-        return res.json({
-          status: false,
-          message: "Không đủ số lượng túi máu khả dụng để xuất",
-        });
-      }
+      const take = Math.min(Number(batch.units), remaining);
+      const newUnits = Number(batch.units) - take;
 
-      await t.commit();
+      await batch.update({ units: newUnits }, { transaction: t });
 
-      return res.json({ status: true, message: "Xuất túi máu thành công" });
-    } catch (error) {
+      await createInventoryTx(
+        {
+          inventoryId: batch.id,
+          userId: authUser?.userId || authUser?.id,
+          txType: "OUT",
+          units: take,
+          reason:
+            reason ||
+            `Xuất ${take} túi khả dụng từ lô id=${batch.id} (blood_type_id=${blood_type_id})`,
+        },
+        { transaction: t }
+      );
+
+      remaining -= take;
+    }
+
+    if (remaining > 0) {
       await t.rollback();
-
-      return res.status(500).json({
+      return res.json({
         status: false,
-        message: "Lỗi xuất túi máu",
-        error: error.message,
+        message: "Không đủ số lượng túi máu khả dụng để xuất",
       });
     }
-  },
+
+    await t.commit();
+
+    return res.json({ status: true, message: "Xuất túi máu thành công" });
+  } catch (error) {
+    await t.rollback();
+
+    return res.status(500).json({
+      status: false,
+      message: "Lỗi xuất túi máu",
+      error: error.message,
+    });
+  }
+},
 };
