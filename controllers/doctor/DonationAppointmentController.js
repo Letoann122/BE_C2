@@ -1,4 +1,5 @@
 "use strict";
+
 const { Op } = require("sequelize");
 const {
   Appointment,
@@ -9,8 +10,16 @@ const {
   Hospital,
   Campaign,
 } = require("../../models");
+const { emitAppointmentUpdated } = require("../../socket");
+const emailQueue = require("../../services/emailQueue");
+const { APPOINTMENT_STATUS } = require("../../constants/appointmentStatus");
+const { recalculateSlotCount } = require("../../services/slotCapacityService");
+const {
+  refreshSlotCountersByAppointment,
+  emitSlotAfterCommit,
+} = require("../../services/slotCapacityService");
+const UserNotificationService = require("../../services/UserNotificationService");
 
-const emailQueue = require("../../services/emailQueue"); // 🔥 dùng queue
 const formatDate = (d) => {
   if (!d) return "";
   const date = new Date(d);
@@ -20,20 +29,28 @@ const formatDate = (d) => {
   return `${dd}/${mm}/${yyyy}`;
 };
 
-const formatTime = (d) => (d ? d.toTimeString().slice(0, 5) : null);
+const formatTime = (value) => {
+  if (!value) return null;
+
+  if (typeof value === "string") {
+    return value.slice(0, 5);
+  }
+
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+
+  return d.toTimeString().slice(0, 5);
+};
 
 const inferTimeRange = (date) => {
   if (!date) return "";
   return date.getHours() < 12 ? "7:00 - 11:00" : "13:00 - 17:00";
 };
 
-// ====== helpers: resolve associations without touching models ======
 const pickAssoc = (SourceModel, targetName, foreignKey) => {
   const assocs = SourceModel?.associations || {};
   return Object.values(assocs).find(
-    (a) =>
-      a?.target?.name === targetName &&
-      (!foreignKey || a.foreignKey === foreignKey)
+    (a) => a?.target?.name === targetName && (!foreignKey || a.foreignKey === foreignKey)
   );
 };
 
@@ -44,7 +61,6 @@ const approvedDoctorAssoc = pickAssoc(Appointment, "Doctor", "approved_by_doctor
 
 const slotSiteAssoc = pickAssoc(AppointmentSlot, "DonationSite", "donation_site_id");
 const hospitalAssoc = pickAssoc(DonationSite, "Hospital");
-
 const campaignSiteAssoc = pickAssoc(Campaign, "DonationSite", "donation_site_id");
 
 const getDonor = (appt) => (donorAssoc ? appt[donorAssoc.as] : appt.User);
@@ -54,6 +70,7 @@ const getDirectSite = (appt) => (siteAssoc ? appt[siteAssoc.as] : appt.donation_
 const getSiteFromAppt = (appt) => {
   const slot = getSlot(appt);
   const directSite = getDirectSite(appt);
+
   return (
     (slotSiteAssoc && slot?.[slotSiteAssoc.as]) ||
     slot?.DonationSite ||
@@ -67,14 +84,13 @@ const getHospitalFromSite = (site) =>
 
 const cleanNotes = (notes) => {
   if (!notes) return null;
+
   const lines = String(notes)
     .split("\n")
     .map((x) => x.trim())
     .filter(Boolean);
 
-  const filtered = lines.filter(
-    (l) => !/^\[\s*Địa điểm chiến dịch\s*\]/i.test(l)
-  );
+  const filtered = lines.filter((l) => !/^\[\s*Địa điểm chiến dịch\s*\]/i.test(l));
 
   const out = filtered.join("\n").trim();
   return out || null;
@@ -83,7 +99,6 @@ const cleanNotes = (notes) => {
 const buildMailDataFromAppointment = (appointment, extra = {}) => {
   const donor = getDonor(appointment);
   const slot = getSlot(appointment);
-
   const site = getSiteFromAppt(appointment);
   const hospital = getHospitalFromSite(site);
 
@@ -105,7 +120,6 @@ const buildMailDataFromAppointment = (appointment, extra = {}) => {
   };
 };
 
-// ===== load campaign map =====
 const loadCampaignMap = async (campaignIds) => {
   const ids = [...new Set((campaignIds || []).filter(Boolean))];
   if (!ids.length) return {};
@@ -114,9 +128,7 @@ const loadCampaignMap = async (campaignIds) => {
     ? {
       association: campaignSiteAssoc,
       required: false,
-      include: hospitalAssoc
-        ? [{ association: hospitalAssoc, required: false }]
-        : [Hospital],
+      include: hospitalAssoc ? [{ association: hospitalAssoc, required: false }] : [Hospital],
     }
     : {
       model: DonationSite,
@@ -139,29 +151,30 @@ const getCampaignSite = (camp) =>
   (campaignSiteAssoc && camp?.[campaignSiteAssoc.as]) || camp?.donation_site || null;
 
 module.exports = {
-  // GET /doctor/donation-appointments
   async index(req, res) {
     try {
       const { appointment_code, date, from_date, to_date } = req.query;
 
-      const where = { status: "REQUESTED" };
+      const where = { status: APPOINTMENT_STATUS.REQUESTED };
+
       if (appointment_code) where.appointment_code = appointment_code.trim();
 
-      // ƯU TIÊN filter theo khoảng ngày nếu có
       if (from_date || to_date) {
         const start = from_date
           ? new Date(`${from_date} 00:00:00`)
           : new Date("1970-01-01 00:00:00");
+
         const end = to_date
           ? new Date(`${to_date} 23:59:59`)
           : new Date("9999-12-31 23:59:59");
+
         where.scheduled_at = { [Op.between]: [start, end] };
       } else if (date) {
-        // hỗ trợ backward: filter đúng 1 ngày
         const start = new Date(`${date} 00:00:00`);
         const end = new Date(`${date} 23:59:59`);
         where.scheduled_at = { [Op.between]: [start, end] };
       }
+
       const rows = await Appointment.findAll({
         where,
         include: [
@@ -170,7 +183,10 @@ module.exports = {
               association: donorAssoc,
               attributes: ["full_name", "phone", "email", "blood_group"],
             }
-            : { model: User, attributes: ["full_name", "phone", "email", "blood_group"] },
+            : {
+              model: User,
+              attributes: ["full_name", "phone", "email", "blood_group"],
+            },
 
           slotAssoc
             ? {
@@ -197,16 +213,20 @@ module.exports = {
             : {
               model: AppointmentSlot,
               required: false,
-              include: [{ model: DonationSite, required: false, include: [Hospital] }],
+              include: [
+                {
+                  model: DonationSite,
+                  required: false,
+                  include: [Hospital],
+                },
+              ],
             },
 
           siteAssoc
             ? {
               association: siteAssoc,
               required: false,
-              include: hospitalAssoc
-                ? [{ association: hospitalAssoc, required: false }]
-                : [Hospital],
+              include: hospitalAssoc ? [{ association: hospitalAssoc, required: false }] : [Hospital],
             }
             : {
               model: DonationSite,
@@ -239,14 +259,12 @@ module.exports = {
 
         const apptSite = getSiteFromAppt(row);
         const apptHospital = getHospitalFromSite(apptSite);
-
         const camp = row.campaign_id ? campaignMap[row.campaign_id] : null;
 
         let is_campaign = !!camp;
         let campaign_title = camp?.title || "";
         let campaign_locate_type = camp?.locate_type || null;
         let campaign_location = camp?.location || "";
-
         let location_display = "";
         let hospital_display = "";
 
@@ -261,6 +279,7 @@ module.exports = {
             location_display = [finalSite?.name, finalSite?.address]
               .filter(Boolean)
               .join(" – ");
+
             hospital_display = finalHospital?.name || "";
           } else {
             location_display = campaign_location || "";
@@ -326,12 +345,16 @@ module.exports = {
     }
   },
 
-  // ======================= APPROVE =======================
   async approve(req, res) {
     try {
       const { id } = req.body;
-      if (!id)
-        return res.status(400).json({ status: false, message: "Thiếu ID lịch hiến máu" });
+
+      if (!id) {
+        return res.status(400).json({
+          status: false,
+          message: "Thiếu ID lịch hiến máu",
+        });
+      }
 
       const appointment = await Appointment.findByPk(id, {
         include: [
@@ -352,22 +375,30 @@ module.exports = {
                       ? [{ association: hospitalAssoc, required: false }]
                       : [Hospital],
                   }
-                  : { model: DonationSite, required: false, include: [Hospital] },
+                  : {
+                    model: DonationSite,
+                    required: false,
+                    include: [Hospital],
+                  },
               ],
             }
             : {
               model: AppointmentSlot,
               required: false,
-              include: [{ model: DonationSite, required: false, include: [Hospital] }],
+              include: [
+                {
+                  model: DonationSite,
+                  required: false,
+                  include: [Hospital],
+                },
+              ],
             },
 
           siteAssoc
             ? {
               association: siteAssoc,
               required: false,
-              include: hospitalAssoc
-                ? [{ association: hospitalAssoc, required: false }]
-                : [Hospital],
+              include: hospitalAssoc ? [{ association: hospitalAssoc, required: false }] : [Hospital],
             }
             : {
               model: DonationSite,
@@ -378,38 +409,70 @@ module.exports = {
         ],
       });
 
-      if (!appointment)
-        return res.status(404).json({ status: false, message: "Không tìm thấy lịch hiến máu" });
-      if (appointment.status !== "REQUESTED")
-        return res.status(400).json({ status: false, message: "Chỉ được duyệt lịch CHỜ DUYỆT" });
+      if (!appointment) {
+        return res.status(404).json({
+          status: false,
+          message: "Không tìm thấy lịch hiến máu",
+        });
+      }
+
+      if (appointment.status !== APPOINTMENT_STATUS.REQUESTED) {
+        return res.status(400).json({
+          status: false,
+          message: "Chỉ được duyệt lịch CHỜ DUYỆT",
+        });
+      }
 
       const doctorUserId = req.user?.userId;
       const doctor = await Doctor.findOne({ where: { user_id: doctorUserId } });
-      if (!doctor)
-        return res.status(403).json({ status: false, message: "Tài khoản bác sĩ không hợp lệ" });
 
-      // Update
-      appointment.status = "APPROVED";
+      if (!doctor) {
+        return res.status(403).json({
+          status: false,
+          message: "Tài khoản bác sĩ không hợp lệ",
+        });
+      }
+
+      appointment.status = APPOINTMENT_STATUS.APPROVED;
       appointment.approved_by_doctor_id = doctor.id;
       appointment.approved_at = new Date();
       appointment.rejected_reason = null;
       await appointment.save();
-
-      // ===== Check campaign =====
+      await refreshSlotCountersByAppointment(appointment);
+      await emitSlotAfterCommit(appointment.appointment_slot_id || appointment.slot_id);
+      emitAppointmentUpdated(appointment.id, {
+        status: appointment.status,
+        event: "APPOINTMENT_APPROVED",
+        message: "Lịch hiến máu của bạn đã được duyệt.",
+      });
+      await UserNotificationService.create({
+        user_id: appointment.donor_id,
+        type: "appointment",
+        title: "Lịch hẹn đã được duyệt",
+        message: `Lịch hẹn ${appointment.appointment_code || ""} đã được bác sĩ duyệt.`,
+        priority: "important",
+        action_url: "/my-appointments",
+        meta_json: {
+          appointment_id: appointment.id,
+        },
+      });
       const isCampaign = !!appointment.campaign_id;
 
-      // ===== enrich mail campaign data =====
       let extra = {};
       if (isCampaign) {
         const campMap = await loadCampaignMap([appointment.campaign_id]);
         const camp = campMap[appointment.campaign_id];
+
         if (camp) {
           const campSite = getCampaignSite(camp);
           const campHospital = getHospitalFromSite(campSite);
 
           extra.campaign_title = camp.title || "";
+
           if (camp.locate_type === "donation_site") {
-            extra.location_display = [campSite?.name, campSite?.address].filter(Boolean).join(" – ");
+            extra.location_display = [campSite?.name, campSite?.address]
+              .filter(Boolean)
+              .join(" – ");
             extra.hospital_display = campHospital?.name || "";
           } else {
             extra.location_display = camp.location || "";
@@ -420,9 +483,6 @@ module.exports = {
 
       const mailData = buildMailDataFromAppointment(appointment, extra);
 
-      // ================================
-      //      CHỌN TEMPLATE TỰ ĐỘNG
-      // ================================
       await emailQueue.enqueue({
         email: mailData.email,
         subject: isCampaign
@@ -444,24 +504,37 @@ module.exports = {
         scheduled_at: new Date(),
       });
 
-      return res.json({ status: true, message: "Duyệt lịch hiến máu thành công" });
+      return res.json({
+        status: true,
+        message: "Duyệt lịch hiến máu thành công",
+      });
     } catch (error) {
       console.error("Lỗi duyệt:", error);
-      return res.status(500).json({ status: false, message: "Lỗi server!", error: error.message });
+      return res.status(500).json({
+        status: false,
+        message: "Lỗi server!",
+        error: error.message,
+      });
     }
   },
 
-
-  // ======================= REJECT =======================
-  // ======================= REJECT =======================
   async reject(req, res) {
     try {
       const { id, rejected_reason } = req.body;
 
-      if (!id)
-        return res.status(400).json({ status: false, message: "Thiếu ID lịch hiến máu" });
-      if (!rejected_reason || !rejected_reason.trim())
-        return res.status(400).json({ status: false, message: "Vui lòng nhập lý do từ chối" });
+      if (!id) {
+        return res.status(400).json({
+          status: false,
+          message: "Thiếu ID lịch hiến máu",
+        });
+      }
+
+      if (!rejected_reason || !rejected_reason.trim()) {
+        return res.status(400).json({
+          status: false,
+          message: "Vui lòng nhập lý do từ chối",
+        });
+      }
 
       const appointment = await Appointment.findByPk(id, {
         include: [
@@ -482,22 +555,30 @@ module.exports = {
                       ? [{ association: hospitalAssoc, required: false }]
                       : [Hospital],
                   }
-                  : { model: DonationSite, required: false, include: [Hospital] },
+                  : {
+                    model: DonationSite,
+                    required: false,
+                    include: [Hospital],
+                  },
               ],
             }
             : {
               model: AppointmentSlot,
               required: false,
-              include: [{ model: DonationSite, required: false, include: [Hospital] }],
+              include: [
+                {
+                  model: DonationSite,
+                  required: false,
+                  include: [Hospital],
+                },
+              ],
             },
 
           siteAssoc
             ? {
               association: siteAssoc,
               required: false,
-              include: hospitalAssoc
-                ? [{ association: hospitalAssoc, required: false }]
-                : [Hospital],
+              include: hospitalAssoc ? [{ association: hospitalAssoc, required: false }] : [Hospital],
             }
             : {
               model: DonationSite,
@@ -508,21 +589,57 @@ module.exports = {
         ],
       });
 
-      if (!appointment)
-        return res.status(404).json({ status: false, message: "Không tìm thấy lịch hiến máu" });
-      if (appointment.status !== "REQUESTED")
-        return res.status(400).json({ status: false, message: "Chỉ được từ chối lịch CHỜ DUYỆT" });
+      if (!appointment) {
+        return res.status(404).json({
+          status: false,
+          message: "Không tìm thấy lịch hiến máu",
+        });
+      }
+
+      if (appointment.status !== APPOINTMENT_STATUS.REQUESTED) {
+        return res.status(400).json({
+          status: false,
+          message: "Chỉ được từ chối lịch CHỜ DUYỆT",
+        });
+      }
 
       const doctorUserId = req.user?.userId;
       const doctor = await Doctor.findOne({ where: { user_id: doctorUserId } });
-      if (!doctor)
-        return res.status(403).json({ status: false, message: "Tài khoản bác sĩ không hợp lệ" });
 
-      appointment.status = "REJECTED";
+      if (!doctor) {
+        return res.status(403).json({
+          status: false,
+          message: "Tài khoản bác sĩ không hợp lệ",
+        });
+      }
+
+      const slotId = appointment.appointment_slot_id || appointment.slot_id;
+
+      appointment.status = APPOINTMENT_STATUS.REJECTED;
       appointment.approved_by_doctor_id = doctor.id;
       appointment.approved_at = new Date();
       appointment.rejected_reason = rejected_reason.trim();
       await appointment.save();
+      await UserNotificationService.create({
+        user_id: appointment.donor_id,
+        type: "appointment",
+        title: "Lịch hẹn bị từ chối",
+        message: `Lịch hẹn ${appointment.appointment_code || ""} đã bị từ chối. Lý do: ${rejected_reason.trim()}`,
+        priority: "normal",
+        action_url: "/my-appointments",
+        meta_json: {
+          appointment_id: appointment.id,
+        },
+      });
+      if (slotId) {
+        await recalculateSlotCount(slotId);
+      }
+
+      emitAppointmentUpdated(appointment.id, {
+        status: appointment.status,
+        event: "APPOINTMENT_REJECTED",
+        message: "Lịch hiến máu của bạn đã bị từ chối.",
+      });
 
       const isCampaign = !!appointment.campaign_id;
 
@@ -530,13 +647,17 @@ module.exports = {
       if (isCampaign) {
         const campMap = await loadCampaignMap([appointment.campaign_id]);
         const camp = campMap[appointment.campaign_id];
+
         if (camp) {
           const campSite = getCampaignSite(camp);
           const campHospital = getHospitalFromSite(campSite);
 
           extra.campaign_title = camp.title || "";
+
           if (camp.locate_type === "donation_site") {
-            extra.location_display = [campSite?.name, campSite?.address].filter(Boolean).join(" – ");
+            extra.location_display = [campSite?.name, campSite?.address]
+              .filter(Boolean)
+              .join(" – ");
             extra.hospital_display = campHospital?.name || "";
           } else {
             extra.location_display = camp.location || "";
@@ -575,8 +696,11 @@ module.exports = {
       });
     } catch (error) {
       console.error("Lỗi từ chối:", error);
-      return res.status(500).json({ status: false, message: "Lỗi server!", error: error.message });
+      return res.status(500).json({
+        status: false,
+        message: "Lỗi server!",
+        error: error.message,
+      });
     }
   },
-
 };

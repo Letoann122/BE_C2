@@ -1,0 +1,160 @@
+"use strict";
+
+let io = null;
+
+function initSocket(server) {
+  const { Server } = require("socket.io");
+
+  io = new Server(server, {
+    cors: {
+      origin: "http://localhost:5173",
+      methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
+      credentials: true,
+    },
+  });
+
+  io.on("connection", (socket) => {
+    console.log("🟢 Socket connected:", socket.id);
+
+    socket.on("join_user", (userId) => {
+      if (!userId) return;
+
+      socket.join(`user_${userId}`);
+      console.log(`👤 ${socket.id} joined user_${userId}`);
+    });
+
+    socket.on("leave_user", (userId) => {
+      if (!userId) return;
+
+      socket.leave(`user_${userId}`);
+      console.log(`👤 ${socket.id} left user_${userId}`);
+    });
+
+    socket.on("join_donor", (donorId) => {
+      if (!donorId) return;
+
+      socket.join(`user_${donorId}`);
+      console.log(`🩸 ${socket.id} joined donor/user_${donorId}`);
+    });
+
+    socket.on("leave_donor", (donorId) => {
+      if (!donorId) return;
+
+      socket.leave(`user_${donorId}`);
+      console.log(`🩸 ${socket.id} left donor/user_${donorId}`);
+    });
+
+    socket.on("join_appointment", (appointmentId) => {
+      if (!appointmentId) return;
+
+      socket.join(`appointment_${appointmentId}`);
+      console.log(`📌 ${socket.id} joined appointment_${appointmentId}`);
+    });
+
+    socket.on("leave_appointment", (appointmentId) => {
+      if (!appointmentId) return;
+
+      socket.leave(`appointment_${appointmentId}`);
+      console.log(`📤 ${socket.id} left appointment_${appointmentId}`);
+    });
+
+    socket.on("join_slot", (slotId) => {
+      if (!slotId) return;
+
+      socket.join(`slot_${slotId}`);
+      console.log(`📌 ${socket.id} joined slot_${slotId}`);
+    });
+
+    socket.on("leave_slot", (slotId) => {
+      if (!slotId) return;
+
+      socket.leave(`slot_${slotId}`);
+      console.log(`📤 ${socket.id} left slot_${slotId}`);
+    });
+
+    socket.on("disconnect", () => {
+      console.log("🔴 Socket disconnected:", socket.id);
+    });
+  });
+
+  console.log("✅ Socket.IO local initialized");
+
+  return io;
+}
+
+function emitAppointmentUpdated(appointmentId, payload = {}) {
+  if (!io || !appointmentId) return;
+
+  io.to(`appointment_${appointmentId}`).emit("appointment_updated", {
+    appointment_id: appointmentId,
+    ...payload,
+  });
+}
+
+function emitSlotUpdated(slotId, payload = {}) {
+  if (!io || !slotId) return;
+
+  io.to(`slot_${slotId}`).emit("slot_updated", {
+    slot_id: slotId,
+    ...payload,
+  });
+
+  io.emit("slot_capacity_updated", {
+    slot_id: slotId,
+    ...payload,
+  });
+}
+
+function emitEmergencyAlertUpdated(payload = {}) {
+  if (!io) return;
+
+  io.emit("emergency_alert_updated", payload);
+}
+
+function emitToUser(userId, eventName, payload = {}) {
+  if (!io || !userId || !eventName) return;
+
+  io.to(`user_${userId}`).emit(eventName, payload);
+}
+
+function emitEmergencyRequestToDonor(donorId, payload = {}) {
+  if (!io || !donorId) return;
+
+  io.to(`user_${donorId}`).emit("emergency_request_received", {
+    donor_id: donorId,
+    ...payload,
+  });
+}
+
+function emitUserNotification(userId, payload = {}) {
+  if (!io || !userId) return;
+
+  io.to(`user_${userId}`).emit("new_user_notification", payload);
+}
+
+function emitEmergencyRequestPing(payload = {}) {
+  if (!io) return;
+
+  io.emit("emergency_request_ping", payload);
+}
+
+function emitEmergencyRequestStatsUpdated(emergencyRequestId, payload = {}) {
+  if (!io || !emergencyRequestId) return;
+
+  io.emit("emergency_request_stats_updated", {
+    emergency_request_id: emergencyRequestId,
+    ...payload,
+  });
+}
+
+module.exports = {
+  initSocket,
+  emitAppointmentUpdated,
+  emitSlotUpdated,
+  emitEmergencyAlertUpdated,
+  emitToUser,
+  emitEmergencyRequestToDonor,
+  emitEmergencyRequestStatsUpdated,
+  emitEmergencyRequestPing,
+  emitUserNotification,
+};

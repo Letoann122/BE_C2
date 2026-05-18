@@ -3,6 +3,7 @@
 const cron = require("node-cron");
 const { EmailJob } = require("../models");
 const { sendMail } = require("../services/mailService");
+const CheckinController = require("../controllers/doctor/CheckinController");
 const { Op } = require("sequelize");
 
 async function processEmailJobs() {
@@ -44,7 +45,18 @@ async function processEmailJobs() {
 }
 
 // Chạy mỗi phút
-cron.schedule("* * * * *", () => {
+cron.schedule("* * * * *", async () => {
   console.log("⏳ Cronjob: kiểm tra email_jobs...");
-  processEmailJobs();
+
+  await processEmailJobs();
+
+  try {
+    const updatedCount = await CheckinController.markNoShowAppointments();
+
+    if (updatedCount > 0) {
+      console.log(`🚫 Cronjob: đã cập nhật ${updatedCount} lịch hẹn sang NO_SHOW`);
+    }
+  } catch (err) {
+    console.error("❌ Cron no-show error:", err);
+  }
 });
