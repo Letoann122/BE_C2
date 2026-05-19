@@ -1,7 +1,13 @@
 "use strict";
 
 const { Op } = require("sequelize");
-const { Appointment, Doctor, User, DonationSite } = require("../../models");
+const {
+  Appointment,
+  Doctor,
+  User,
+  DonationSite,
+  AppointmentSlot,
+} = require("../../models");
 const { emitAppointmentUpdated } = require("../../socket");
 const {
   APPOINTMENT_STATUS,
@@ -25,7 +31,7 @@ function parseQrPayload(raw) {
     if (json && typeof json === "object") {
       return json;
     }
-  } catch (_) { }
+  } catch (_) {}
 
   try {
     const url = new URL(text);
@@ -36,7 +42,7 @@ function parseQrPayload(raw) {
         url.searchParams.get("code") ||
         url.searchParams.get("qr_code"),
     };
-  } catch (_) { }
+  } catch (_) {}
 
   return {
     appointment_code: text,
@@ -44,6 +50,67 @@ function parseQrPayload(raw) {
 }
 
 const ACTIVE_BEFORE_CHECKIN_STATUSES = ["APPROVED", "BOOKED"];
+
+function buildDateTime(dateValue, timeValue) {
+  if (!dateValue || !timeValue) return null;
+
+  const datePart = String(dateValue).slice(0, 10);
+  const timePart = String(timeValue).slice(0, 8);
+
+  return new Date(`${datePart}T${timePart}`);
+}
+
+async function validateCheckinTime(appointment) {
+  const now = new Date();
+  const slotId = appointment.appointment_slot_id || appointment.slot_id;
+
+  if (slotId) {
+    const slot = await AppointmentSlot.findByPk(slotId);
+
+    if (slot && slot.slot_date && slot.start_time && slot.end_time) {
+      const startTime = buildDateTime(slot.slot_date, slot.start_time);
+      const endTime = buildDateTime(slot.slot_date, slot.end_time);
+
+      if (startTime && now < startTime) {
+        return {
+          valid: false,
+          message: `Chưa đến giờ check-in! Khung giờ bắt đầu lúc ${startTime.toLocaleString(
+            "vi-VN"
+          )}`,
+        };
+      }
+
+      if (endTime && now > endTime) {
+        return {
+          valid: false,
+          message: `Đã quá giờ check-in! Khung giờ kết thúc lúc ${endTime.toLocaleString(
+            "vi-VN"
+          )}`,
+        };
+      }
+
+      return { valid: true };
+    }
+  }
+
+  if (appointment.scheduled_at) {
+    const scheduledAt = new Date(appointment.scheduled_at);
+
+    const sameDay =
+      now.getFullYear() === scheduledAt.getFullYear() &&
+      now.getMonth() === scheduledAt.getMonth() &&
+      now.getDate() === scheduledAt.getDate();
+
+    if (!sameDay) {
+      return {
+        valid: false,
+        message: "Chỉ được check-in đúng ngày trong lịch hẹn!",
+      };
+    }
+  }
+
+  return { valid: true };
+}
 
 function getNoShowCutoff(scheduledAt) {
   const date = new Date(scheduledAt);
@@ -207,26 +274,36 @@ module.exports = {
         });
       }
 
+      const timeValidation = await validateCheckinTime(appointment);
+
+      if (!timeValidation.valid) {
+        return res.status(400).json({
+          status: false,
+          message: timeValidation.message,
+        });
+      }
+
       appointment.status = APPOINTMENT_STATUS.CHECKED_IN;
       appointment.checked_in_at = new Date();
       appointment.checked_in_by_doctor_id = doctor.id;
 
       await appointment.save();
+
       try {
-  await UserNotificationService.create({
-    user_id: appointment.donor_id,
-    type: "appointment",
-    title: "Check-in thành công",
-    message: "Bạn đã check-in thành công cho lịch hiến máu.",
-    priority: "normal",
-    action_url: "/my-appointments",
-    meta_json: {
-      appointment_id: appointment.id,
-    },
-  });
-} catch (notiError) {
-  console.error("CREATE CHECKIN NOTIFICATION ERROR:", notiError);
-}
+        await UserNotificationService.create({
+          user_id: appointment.donor_id,
+          type: "appointment",
+          title: "Check-in thành công",
+          message: "Bạn đã check-in thành công cho lịch hiến máu.",
+          priority: "normal",
+          action_url: "/my-appointments",
+          meta_json: {
+            appointment_id: appointment.id,
+          },
+        });
+      } catch (notiError) {
+        console.error("CREATE CHECKIN NOTIFICATION ERROR:", notiError);
+      }
 
       emitAppointmentUpdated(appointment.id, {
         status: appointment.status,
@@ -344,8 +421,8 @@ module.exports = {
             hour === null
               ? "Không xác định"
               : hour < 12
-                ? "Ca sáng"
-                : "Ca chiều",
+              ? "Ca sáng"
+              : "Ca chiều",
         };
       });
 
