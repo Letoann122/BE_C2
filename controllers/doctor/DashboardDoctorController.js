@@ -1,4 +1,3 @@
-// controllers/doctor/DoctorDashboardController.js
 "use strict";
 
 const { Op, fn, col, literal } = require("sequelize");
@@ -158,7 +157,7 @@ module.exports = {
         : {};
 
       // =========================
-      // A) TOTAL UNITS: theo yêu cầu -> CHỈ units>0, KHÔNG lọc expiry
+      // A) TOTAL UNITS: chỉ units > 0, không lọc expiry
       // =========================
       const invWhereAll = {
         units: { [Op.gt]: 0 },
@@ -168,7 +167,7 @@ module.exports = {
       const totalUnits = await BloodInventory.sum("units", { where: invWhereAll });
 
       // =========================
-      // B) Inventory by blood type (để giống trang quản lý kho máu): units>0 (không lọc expiry)
+      // B) Inventory by blood type
       // =========================
       const inventoryByTypeRaw = await BloodInventory.findAll({
         where: invWhereAll,
@@ -189,7 +188,7 @@ module.exports = {
       });
 
       // =========================
-      // C) ALERTS lowGroups: nên tính theo usable (chưa hết hạn) để cảnh báo không bị ảo
+      // C) ALERTS lowGroups: usable only
       // =========================
       const invWhereUsable = {
         ...invWhereAll,
@@ -220,7 +219,7 @@ module.exports = {
         .slice(0, 3);
 
       // =========================
-      // 2) Expiring soon (within 3 days) — units > 0
+      // 2) Expiring soon
       // =========================
       const expiringTo = toYMD(addDays(today0, 3));
       const expiringUnits = await BloodInventory.sum("units", {
@@ -231,7 +230,7 @@ module.exports = {
       });
 
       // =========================
-      // 3) Appointment include scope (lọc theo hospital qua donation_site)
+      // 3) Appointment include scope
       // =========================
       const apIncludeSite = DonationSite
         ? [
@@ -254,7 +253,7 @@ module.exports = {
       });
 
       // =========================
-      // 4) Collected today (Donation.collected_at TODAY)
+      // 4) Collected today
       // =========================
       const collectedToday = await Donation.sum("volume_ml", {
         where: {
@@ -271,7 +270,7 @@ module.exports = {
       ];
 
       // =========================
-      // 5) Inventory trend: daily IN/OUT (dựa trên InventoryTransaction)
+      // 5) Inventory trend
       // =========================
       const invLabels = buildDayLabels(invStart, invEnd);
 
@@ -279,7 +278,7 @@ module.exports = {
         {
           model: BloodInventory,
           attributes: [],
-          where: hospitalScope,        // OR hospital_id = hospitalId OR NULL
+          where: hospitalScope,
           required: !!hospitalId,
         },
       ];
@@ -317,9 +316,11 @@ module.exports = {
       };
 
       // =========================
-      // 6) Appointments summary + trend (5 status)
+      // 6) Appointments summary + trend
       // =========================
       const apLabels = buildDayLabels(apStart, apEnd);
+
+      const processingStatuses = ["CHECKED_IN", "SCREENING", "DONATING"];
 
       const apTodayCount = await Appointment.count({
         where: { scheduled_at: { [Op.between]: [today0, today23] } },
@@ -327,23 +328,50 @@ module.exports = {
       });
 
       const apRequestedCount = await Appointment.count({
-        where: { status: "REQUESTED", scheduled_at: { [Op.between]: [startOfDay(apStart), endOfDay(apEnd)] } },
+        where: {
+          status: "REQUESTED",
+          scheduled_at: { [Op.between]: [startOfDay(apStart), endOfDay(apEnd)] },
+        },
         include: apIncludeSite,
       });
+
       const apApprovedCount = await Appointment.count({
-        where: { status: "APPROVED", scheduled_at: { [Op.between]: [startOfDay(apStart), endOfDay(apEnd)] } },
+        where: {
+          status: "APPROVED",
+          scheduled_at: { [Op.between]: [startOfDay(apStart), endOfDay(apEnd)] },
+        },
         include: apIncludeSite,
       });
+
       const apRejectedCount = await Appointment.count({
-        where: { status: "REJECTED", scheduled_at: { [Op.between]: [startOfDay(apStart), endOfDay(apEnd)] } },
+        where: {
+          status: "REJECTED",
+          scheduled_at: { [Op.between]: [startOfDay(apStart), endOfDay(apEnd)] },
+        },
         include: apIncludeSite,
       });
+
+      const apProcessingCount = await Appointment.count({
+        where: {
+          status: { [Op.in]: processingStatuses },
+          scheduled_at: { [Op.between]: [startOfDay(apStart), endOfDay(apEnd)] },
+        },
+        include: apIncludeSite,
+      });
+
       const apCompletedCount = await Appointment.count({
-        where: { status: "COMPLETED", scheduled_at: { [Op.between]: [startOfDay(apStart), endOfDay(apEnd)] } },
+        where: {
+          status: "COMPLETED",
+          scheduled_at: { [Op.between]: [startOfDay(apStart), endOfDay(apEnd)] },
+        },
         include: apIncludeSite,
       });
+
       const apCancelledCount = await Appointment.count({
-        where: { status: "CANCELLED", scheduled_at: { [Op.between]: [startOfDay(apStart), endOfDay(apEnd)] } },
+        where: {
+          status: "CANCELLED",
+          scheduled_at: { [Op.between]: [startOfDay(apStart), endOfDay(apEnd)] },
+        },
         include: apIncludeSite,
       });
 
@@ -353,6 +381,13 @@ module.exports = {
           [fn("SUM", literal(`CASE WHEN Appointment.status = 'REQUESTED' THEN 1 ELSE 0 END`)), "requested"],
           [fn("SUM", literal(`CASE WHEN Appointment.status = 'APPROVED' THEN 1 ELSE 0 END`)), "approved"],
           [fn("SUM", literal(`CASE WHEN Appointment.status = 'REJECTED' THEN 1 ELSE 0 END`)), "rejected"],
+          [
+            fn(
+              "SUM",
+              literal(`CASE WHEN Appointment.status IN ('CHECKED_IN', 'SCREENING', 'DONATING') THEN 1 ELSE 0 END`)
+            ),
+            "processing",
+          ],
           [fn("SUM", literal(`CASE WHEN Appointment.status = 'COMPLETED' THEN 1 ELSE 0 END`)), "completed"],
           [fn("SUM", literal(`CASE WHEN Appointment.status = 'CANCELLED' THEN 1 ELSE 0 END`)), "cancelled"],
         ],
@@ -365,11 +400,30 @@ module.exports = {
       const appointmentTrend = {
         range: appointment_range,
         labels: apLabels,
-        requested: mapSeriesByDay(apLabels, apDailyRaw.map((x) => ({ day: x.day, value: Number(x.requested || 0) }))),
-        approved: mapSeriesByDay(apLabels, apDailyRaw.map((x) => ({ day: x.day, value: Number(x.approved || 0) }))),
-        rejected: mapSeriesByDay(apLabels, apDailyRaw.map((x) => ({ day: x.day, value: Number(x.rejected || 0) }))),
-        completed: mapSeriesByDay(apLabels, apDailyRaw.map((x) => ({ day: x.day, value: Number(x.completed || 0) }))),
-        cancelled: mapSeriesByDay(apLabels, apDailyRaw.map((x) => ({ day: x.day, value: Number(x.cancelled || 0) }))),
+        requested: mapSeriesByDay(
+          apLabels,
+          apDailyRaw.map((x) => ({ day: x.day, value: Number(x.requested || 0) }))
+        ),
+        approved: mapSeriesByDay(
+          apLabels,
+          apDailyRaw.map((x) => ({ day: x.day, value: Number(x.approved || 0) }))
+        ),
+        rejected: mapSeriesByDay(
+          apLabels,
+          apDailyRaw.map((x) => ({ day: x.day, value: Number(x.rejected || 0) }))
+        ),
+        processing: mapSeriesByDay(
+          apLabels,
+          apDailyRaw.map((x) => ({ day: x.day, value: Number(x.processing || 0) }))
+        ),
+        completed: mapSeriesByDay(
+          apLabels,
+          apDailyRaw.map((x) => ({ day: x.day, value: Number(x.completed || 0) }))
+        ),
+        cancelled: mapSeriesByDay(
+          apLabels,
+          apDailyRaw.map((x) => ({ day: x.day, value: Number(x.cancelled || 0) }))
+        ),
       };
 
       // =========================
@@ -433,7 +487,7 @@ module.exports = {
         data: {
           hospital_id: hospitalId,
           alerts: {
-            lowGroups, // usable only
+            lowGroups,
             expiring: { units: Number(expiringUnits || 0), within_days: 3 },
           },
           topCards,
@@ -444,6 +498,7 @@ module.exports = {
               requested: apRequestedCount,
               approved: apApprovedCount,
               rejected: apRejectedCount,
+              processing: apProcessingCount,
               completed: apCompletedCount,
               cancelled: apCancelledCount,
             },
