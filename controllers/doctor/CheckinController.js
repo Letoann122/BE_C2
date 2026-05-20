@@ -19,6 +19,8 @@ const {
   emitSlotAfterCommit,
 } = require("../../services/slotCapacityService");
 
+const VN_TIMEZONE_OFFSET_HOURS = 7;
+
 function parseQrPayload(raw) {
   if (!raw) return {};
 
@@ -51,13 +53,142 @@ function parseQrPayload(raw) {
 
 const ACTIVE_BEFORE_CHECKIN_STATUSES = ["APPROVED", "BOOKED"];
 
-function buildDateTime(dateValue, timeValue) {
+function pad2(value) {
+  return String(value).padStart(2, "0");
+}
+
+function getVietnamParts(date = new Date()) {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Ho_Chi_Minh",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+
+  const parts = formatter.formatToParts(date);
+  const map = {};
+
+  for (const part of parts) {
+    if (part.type !== "literal") {
+      map[part.type] = part.value;
+    }
+  }
+
+  return {
+    year: Number(map.year),
+    month: Number(map.month),
+    day: Number(map.day),
+    hour: Number(map.hour),
+    minute: Number(map.minute),
+    second: Number(map.second),
+    dateString: `${map.year}-${map.month}-${map.day}`,
+    timeString: `${map.hour}:${map.minute}:${map.second}`,
+  };
+}
+
+function getDatePartInVietnam(dateValue) {
+  if (!dateValue) return null;
+
+  if (typeof dateValue === "string") {
+    return dateValue.slice(0, 10);
+  }
+
+  const parts = getVietnamParts(new Date(dateValue));
+  return parts.dateString;
+}
+
+function buildVietnamDateTime(dateValue, timeValue) {
   if (!dateValue || !timeValue) return null;
 
-  const datePart = String(dateValue).slice(0, 10);
+  const datePart = getDatePartInVietnam(dateValue);
   const timePart = String(timeValue).slice(0, 8);
 
-  return new Date(`${datePart}T${timePart}`);
+  if (!datePart || !timePart) return null;
+
+  const [year, month, day] = datePart.split("-").map(Number);
+  const [hour = 0, minute = 0, second = 0] = timePart.split(":").map(Number);
+
+  if (!year || !month || !day) return null;
+
+  return new Date(
+    Date.UTC(
+      year,
+      month - 1,
+      day,
+      hour - VN_TIMEZONE_OFFSET_HOURS,
+      minute,
+      second,
+      0
+    )
+  );
+}
+
+function buildVietnamDateOnly(dateValue, endOfDay = false) {
+  const datePart = getDatePartInVietnam(dateValue);
+
+  if (!datePart) return null;
+
+  const [year, month, day] = datePart.split("-").map(Number);
+
+  if (!year || !month || !day) return null;
+
+  const hour = endOfDay ? 23 : 0;
+  const minute = endOfDay ? 59 : 0;
+  const second = endOfDay ? 59 : 0;
+  const millisecond = endOfDay ? 999 : 0;
+
+  return new Date(
+    Date.UTC(
+      year,
+      month - 1,
+      day,
+      hour - VN_TIMEZONE_OFFSET_HOURS,
+      minute,
+      second,
+      millisecond
+    )
+  );
+}
+
+function formatVietnamDateTime(value) {
+  if (!value) return "";
+
+  return new Date(value).toLocaleString("vi-VN", {
+    timeZone: "Asia/Ho_Chi_Minh",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+}
+
+function formatVietnamTime(value) {
+  if (!value) return "";
+
+  return new Date(value).toLocaleTimeString("vi-VN", {
+    timeZone: "Asia/Ho_Chi_Minh",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function isSameVietnamDate(dateA, dateB) {
+  if (!dateA || !dateB) return false;
+
+  const a = getVietnamParts(new Date(dateA));
+  const b = getVietnamParts(new Date(dateB));
+
+  return (
+    a.year === b.year &&
+    a.month === b.month &&
+    a.day === b.day
+  );
 }
 
 async function validateCheckinTime(appointment) {
@@ -68,23 +199,49 @@ async function validateCheckinTime(appointment) {
     const slot = await AppointmentSlot.findByPk(slotId);
 
     if (slot && slot.slot_date && slot.start_time && slot.end_time) {
-      const startTime = buildDateTime(slot.slot_date, slot.start_time);
-      const endTime = buildDateTime(slot.slot_date, slot.end_time);
+      const startTime = buildVietnamDateTime(slot.slot_date, slot.start_time);
+      const endTime = buildVietnamDateTime(slot.slot_date, slot.end_time);
 
-      if (startTime && now < startTime) {
+      if (!startTime || !endTime) {
         return {
           valid: false,
-          message: `Chưa đến giờ check-in! Khung giờ bắt đầu lúc ${startTime.toLocaleString(
-            "vi-VN"
+          message: "Không xác định được khung giờ check-in!",
+        };
+      }
+
+      const startOfSlotDay = buildVietnamDateOnly(slot.slot_date, false);
+      const endOfSlotDay = buildVietnamDateOnly(slot.slot_date, true);
+
+      if (startOfSlotDay && now < startOfSlotDay) {
+        return {
+          valid: false,
+          message: `Chưa đến ngày check-in! Lịch hẹn vào ngày ${formatVietnamDateTime(
+            startTime
           )}`,
         };
       }
 
-      if (endTime && now > endTime) {
+      if (endOfSlotDay && now > endOfSlotDay) {
         return {
           valid: false,
-          message: `Đã quá giờ check-in! Khung giờ kết thúc lúc ${endTime.toLocaleString(
-            "vi-VN"
+          message: "Lịch hẹn không phải ngày hôm nay, không thể check-in!",
+        };
+      }
+
+      if (now < startTime) {
+        return {
+          valid: false,
+          message: `Chưa đến giờ check-in! Khung giờ bắt đầu lúc ${formatVietnamTime(
+            startTime
+          )}`,
+        };
+      }
+
+      if (now > endTime) {
+        return {
+          valid: false,
+          message: `Đã quá giờ check-in! Khung giờ kết thúc lúc ${formatVietnamTime(
+            endTime
           )}`,
         };
       }
@@ -94,12 +251,10 @@ async function validateCheckinTime(appointment) {
   }
 
   if (appointment.scheduled_at) {
+    const nowVietnam = new Date();
     const scheduledAt = new Date(appointment.scheduled_at);
 
-    const sameDay =
-      now.getFullYear() === scheduledAt.getFullYear() &&
-      now.getMonth() === scheduledAt.getMonth() &&
-      now.getDate() === scheduledAt.getDate();
+    const sameDay = isSameVietnamDate(nowVietnam, scheduledAt);
 
     if (!sameDay) {
       return {
@@ -113,18 +268,23 @@ async function validateCheckinTime(appointment) {
 }
 
 function getNoShowCutoff(scheduledAt) {
-  const date = new Date(scheduledAt);
-  const hour = date.getHours();
+  const scheduledDate = new Date(scheduledAt);
+  const vnParts = getVietnamParts(scheduledDate);
 
-  const cutoff = new Date(date);
+  const cutoffHour = vnParts.hour < 12 ? 11 : 17;
+  const cutoffMinute = 30;
 
-  if (hour < 12) {
-    cutoff.setHours(11, 30, 0, 0);
-  } else {
-    cutoff.setHours(17, 30, 0, 0);
-  }
-
-  return cutoff;
+  return new Date(
+    Date.UTC(
+      vnParts.year,
+      vnParts.month - 1,
+      vnParts.day,
+      cutoffHour - VN_TIMEZONE_OFFSET_HOURS,
+      cutoffMinute,
+      0,
+      0
+    )
+  );
 }
 
 async function markNoShowAppointments() {
@@ -340,11 +500,31 @@ module.exports = {
     try {
       const { time_slot, status } = req.query;
 
-      const startOfDay = new Date();
-      startOfDay.setHours(0, 0, 0, 0);
+      const nowVN = getVietnamParts(new Date());
 
-      const endOfDay = new Date();
-      endOfDay.setHours(23, 59, 59, 999);
+      const startOfDay = new Date(
+        Date.UTC(
+          nowVN.year,
+          nowVN.month - 1,
+          nowVN.day,
+          0 - VN_TIMEZONE_OFFSET_HOURS,
+          0,
+          0,
+          0
+        )
+      );
+
+      const endOfDay = new Date(
+        Date.UTC(
+          nowVN.year,
+          nowVN.month - 1,
+          nowVN.day,
+          23 - VN_TIMEZONE_OFFSET_HOURS,
+          59,
+          59,
+          999
+        )
+      );
 
       const where = {
         checked_in_at: {
@@ -368,8 +548,28 @@ module.exports = {
       if (time_slot === "morning") {
         where.scheduled_at = {
           [Op.between]: [
-            new Date(`${startOfDay.toISOString().slice(0, 10)} 07:00:00`),
-            new Date(`${startOfDay.toISOString().slice(0, 10)} 11:59:59`),
+            new Date(
+              Date.UTC(
+                nowVN.year,
+                nowVN.month - 1,
+                nowVN.day,
+                7 - VN_TIMEZONE_OFFSET_HOURS,
+                0,
+                0,
+                0
+              )
+            ),
+            new Date(
+              Date.UTC(
+                nowVN.year,
+                nowVN.month - 1,
+                nowVN.day,
+                11 - VN_TIMEZONE_OFFSET_HOURS,
+                59,
+                59,
+                999
+              )
+            ),
           ],
         };
       }
@@ -377,8 +577,28 @@ module.exports = {
       if (time_slot === "afternoon") {
         where.scheduled_at = {
           [Op.between]: [
-            new Date(`${startOfDay.toISOString().slice(0, 10)} 13:00:00`),
-            new Date(`${startOfDay.toISOString().slice(0, 10)} 17:59:59`),
+            new Date(
+              Date.UTC(
+                nowVN.year,
+                nowVN.month - 1,
+                nowVN.day,
+                13 - VN_TIMEZONE_OFFSET_HOURS,
+                0,
+                0,
+                0
+              )
+            ),
+            new Date(
+              Date.UTC(
+                nowVN.year,
+                nowVN.month - 1,
+                nowVN.day,
+                17 - VN_TIMEZONE_OFFSET_HOURS,
+                59,
+                59,
+                999
+              )
+            ),
           ],
         };
       }
@@ -404,7 +624,9 @@ module.exports = {
         const scheduledAt = item.scheduled_at
           ? new Date(item.scheduled_at)
           : null;
-        const hour = scheduledAt ? scheduledAt.getHours() : null;
+
+        const vn = scheduledAt ? getVietnamParts(scheduledAt) : null;
+        const hour = vn ? vn.hour : null;
 
         return {
           appointment_id: item.id,
